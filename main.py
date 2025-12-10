@@ -2,10 +2,11 @@ from PIL import Image, ImageTk, ImageGrab
 import colorsys
 from collections import Counter
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk, font as tkfont
+from tkinter import filedialog, messagebox, ttk, font as tkfont, colorchooser
 import os
 import random
 import datetime
+import tempfile
 
 class ColorPaletteGenerator:
     def __init__(self):
@@ -190,6 +191,49 @@ class ColorPaletteGenerator:
             mono_colors.append(self.hsv_to_rgb(h, new_s, new_v))
         
         return mono_colors
+
+    def generate_split_complementary(self, rgb):
+        """스플릿 보색 조화 (보색 양옆 색상)"""
+        h, s, v = self.rgb_to_hsv(*rgb)
+        colors = []
+        # 보색의 양옆 각도 (대략 150도와 210도)
+        for offset in [150/360, 210/360]:
+            new_h = (h + offset) % 1.0
+            colors.append(self.hsv_to_rgb(new_h, s, v))
+        return colors
+
+    def generate_square(self, rgb):
+        """스퀘어 조화 (정사각형 배치, 90도 간격 - 4색)"""
+        h, s, v = self.rgb_to_hsv(*rgb)
+        colors = []
+        # 기본색 + 120도 + 240도 (실제 스퀘어는 90도이지만, 색상 휠에서 더 균형잡힌 배치)
+        for offset in [120/360, 180/360, 240/360]:
+            new_h = (h + offset) % 1.0
+            colors.append(self.hsv_to_rgb(new_h, s, v))
+        return colors
+
+    def generate_tetradic(self, rgb):
+        """테트라딕 조화 (사각형, 90도 간격 - 4색)"""
+        h, s, v = self.rgb_to_hsv(*rgb)
+        colors = []
+        # 90도 간격 (정확한 사각형 배치)
+        for offset in [90/360, 180/360, 270/360]:
+            new_h = (h + offset) % 1.0
+            colors.append(self.hsv_to_rgb(new_h, s, v))
+        return colors
+
+    def generate_double_complementary(self, rgb):
+        """더블 보색 조화 (보색과 유사색의 보색)"""
+        h, s, v = self.rgb_to_hsv(*rgb)
+        colors = []
+        # 보색 (180도)
+        comp_h = (h + 0.5) % 1.0
+        colors.append(self.hsv_to_rgb(comp_h, s, v))
+        # 유사색들의 보색 (약 150도와 210도)
+        for offset in [150/360, 210/360]:
+            new_h = (h + offset) % 1.0
+            colors.append(self.hsv_to_rgb(new_h, s, v))
+        return colors
     
     def rgb_to_hex(self, rgb):
         """RGB를 HEX로 변환"""
@@ -205,7 +249,7 @@ class ColorPaletteGenerator:
         return (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
     
     def generate_palette(self, source, source_type='hex'):
-        """전체 팔레트 생성"""
+        """전체 팔레트 생성 (모든 조화 포함)"""
         if source_type == 'hex':
             base_color = self.hex_to_rgb(source)
         elif source_type == 'image':
@@ -219,7 +263,11 @@ class ColorPaletteGenerator:
             'complementary': self.generate_complementary(base_color),
             'analogous': self.generate_analogous(base_color),
             'triadic': self.generate_triadic(base_color),
-            'monochromatic': self.generate_monochromatic(base_color)
+            'monochromatic': self.generate_monochromatic(base_color),
+            'split_complementary': self.generate_split_complementary(base_color),
+            'square': self.generate_square(base_color),
+            'tetradic': self.generate_tetradic(base_color),
+            'double_complementary': self.generate_double_complementary(base_color)
         }
         
         return palette
@@ -232,6 +280,9 @@ class PaletteApp(tk.Tk):
         self.resizable(False, False)
         self.generator = ColorPaletteGenerator()
         self.image_path = None
+        self._temp_screenshot = None  # track temp screenshot file for cleanup
+        # Default selected harmony schemes
+        self.selected_schemes = ['complementary', 'analogous', 'triadic', 'monochromatic']
 
         self.create_widgets()
     
@@ -249,20 +300,37 @@ class PaletteApp(tk.Tk):
 
         # Source type radio
         self.source_type = tk.StringVar(value='hex')
-        rb_hex = ttk.Radiobutton(frm_top, text='HEX 입력', value='hex', variable=self.source_type, command=self.on_source_change)
+        rb_hex = ttk.Radiobutton(frm_top, text='색상 선택', value='hex', variable=self.source_type, command=self.on_source_change)
         rb_img = ttk.Radiobutton(frm_top, text='이미지 선택', value='image', variable=self.source_type, command=self.on_source_change)
         rb_hex.grid(row=0, column=0, sticky='w')
         rb_img.grid(row=0, column=1, sticky='w', padx=(8,0))
 
-        # HEX entry
-        ttk.Label(frm_top, text="HEX:").grid(row=1, column=0, pady=(8,0), sticky='w')
-        self.hex_entry = ttk.Entry(frm_top, width=20)
-        self.hex_entry.grid(row=1, column=1, pady=(8,0), sticky='w')
-        self.hex_entry.insert(0, "#3498db")
+        # make columns have reasonable minimum widths for alignment
+        for i, ms in enumerate((80, 120, 110, 160, 60, 120)):
+            try:
+                frm_top.columnconfigure(i, minsize=ms)
+            except Exception:
+                pass
+
+        # Color picker button and swatch display
+        self.hex_entry = tk.StringVar(value="#3498db")  # store hex value internally
+        self.color_swatch = tk.Canvas(frm_top, width=70, height=48, bd=0, relief='solid', highlightthickness=0)
+        self.color_swatch.grid(row=1, column=0, pady=(8,0), sticky='nw', padx=(0,0))
+        
+        # Color info label (hex and RGB) - create BEFORE _update_color_swatch
+        self.lbl_color_info = ttk.Label(frm_top, text="HEX: #3498db\nRGB: (52, 152, 219)", font=('Segoe UI', 9))
+        # span two columns so it doesn't collide with buttons
+        self.lbl_color_info.grid(row=2, column=0, columnspan=2, pady=(2,0), sticky='w')
+        
+        # Now update the swatch and color info
+        self._update_color_swatch("#3498db")
+        
+        self.btn_color_picker = ttk.Button(frm_top, text="색상 선택...", command=self.open_color_picker)
+        self.btn_color_picker.grid(row=1, column=1, pady=(8,0), padx=(8,0), sticky='w')
 
         # Image select
         self.btn_select_img = ttk.Button(frm_top, text="이미지 선택...", command=self.select_image)
-        self.btn_select_img.grid(row=1, column=2, padx=(8,0))
+        self.btn_select_img.grid(row=1, column=2, padx=(8,0), pady=(8,0), sticky='w')
         self.lbl_image = ttk.Label(frm_top, text="선택된 파일 없음")
         self.lbl_image.grid(row=1, column=3, padx=(8,0), sticky='w')
         # small thumbnail next to image name
@@ -270,27 +338,61 @@ class PaletteApp(tk.Tk):
         self.img_thumbnail_label.grid(row=1, column=4, padx=(8,0))
         # Screen picker button
         btn_screen_pick = ttk.Button(frm_top, text="스크린에서 추출", command=self.start_screen_picker)
-        btn_screen_pick.grid(row=1, column=5, padx=(8,0))
+        btn_screen_pick.grid(row=1, column=5, padx=(8,0), pady=(8,0), sticky='w')
 
-        # Generate button
+        # action buttons row (separate row to avoid collisions)
         btn_generate = ttk.Button(frm_top, text="Generate", command=self.generate)
-        btn_generate.grid(row=2, column=0, columnspan=2, pady=(12,0), sticky='w')
+        btn_generate.grid(row=3, column=0, pady=(12,0), sticky='w')
         # Random color button
         btn_random = ttk.Button(frm_top, text="랜덤 색상", command=self.generate_random)
-        btn_random.grid(row=2, column=2, padx=(8,0), sticky='w')
+        btn_random.grid(row=3, column=1, padx=(8,0), pady=(12,0), sticky='w')
+        # Color harmony options button
+        btn_harmony = ttk.Button(frm_top, text="색상 조합 옵션", command=self.open_harmony_selector)
+        btn_harmony.grid(row=3, column=2, padx=(8,0), pady=(12,0), sticky='w')
         
 
         # Separator
         sep = ttk.Separator(self, orient='horizontal')
         sep.pack(fill='x', pady=10)
 
-        # Palette display area
-        self.frm_palette = ttk.Frame(self, padding=10)
-        self.frm_palette.pack(fill='both', expand=True)
+        # Main content area: left = palette display, right = saved palettes panel
+        content = ttk.Frame(self)
+        content.pack(fill='both', expand=True)
+
+        # Left: Palette display area
+        self.frm_palette = ttk.Frame(content, padding=10)
+        self.frm_palette.pack(side='left', fill='both', expand=True)
 
         # Color tabs (extracted swatches) shown above the palette area
         self.frm_color_tabs = ttk.Frame(self.frm_palette)
         self.frm_color_tabs.pack(fill='x', pady=(0,6))
+
+        # Right: Saved palettes panel
+        self.frm_saved = ttk.Frame(content, padding=(6,6))
+        self.frm_saved.pack(side='right', fill='y')
+
+        ttk.Label(self.frm_saved, text='저장된 팔레트', font=('Segoe UI', 10, 'bold')).pack(anchor='nw')
+        # container for saved palette entries (custom rendered so we can show color bars)
+        self.saved_list_container = ttk.Frame(self.frm_saved)
+        self.saved_list_container.pack(fill='both', expand=True, pady=(6,6))
+
+        # buttons: add / remove
+        btns = ttk.Frame(self.frm_saved)
+        btns.pack(pady=(4,0))
+        ttk.Button(btns, text='팔레트 추가', command=self.add_saved_palette).grid(row=0, column=0, padx=4)
+        ttk.Button(btns, text='팔레트 제거', command=self.remove_saved_palette).grid(row=0, column=1, padx=4)
+
+        # storage for saved palettes (in-memory)
+        self.saved_palettes = []  # list of dicts: {'name': str, 'colors': [hex,...]}
+        self._saved_counter = 0
+        self._saved_selected = None  # index of selected saved palette
+
+        # create initial saved palette
+        self.add_saved_palette()
+        # select the first one by default
+        if self.saved_palettes:
+            self._saved_selected = 0
+            self.render_saved_list()
 
         # Ensure saves directories exist
         self.saves_root = os.path.join(os.getcwd(), 'saves')
@@ -317,22 +419,42 @@ class PaletteApp(tk.Tk):
     def on_source_change(self):
         mode = self.source_type.get()
         if mode == 'hex':
-            self.hex_entry.config(state='normal')
+            # enable color picker button in HEX mode
+            if hasattr(self, 'btn_color_picker'):
+                self.btn_color_picker.state(['!disabled'])
+            if hasattr(self, 'color_swatch'):
+                self.color_swatch.config(state='normal')
             self.btn_select_img.state(['disabled'])
             # hide extracted swatches when switching to HEX mode
             self.hide_extracted_swatches()
         else:
-            self.hex_entry.config(state='disabled')
+            # disable color picker in image mode
+            if hasattr(self, 'btn_color_picker'):
+                self.btn_color_picker.state(['disabled'])
+            if hasattr(self, 'color_swatch'):
+                self.color_swatch.config(state='disabled')
             self.btn_select_img.state(['!disabled'])
             # if an image is already selected, show its extracted swatches
             if getattr(self, 'extracted_colors', None):
                 self.show_extracted_swatches(self.extracted_colors)
 
     def select_image(self):
+        # cleanup old temp screenshot file if it exists
+        if getattr(self, '_temp_screenshot', None):
+            try:
+                os.unlink(self._temp_screenshot)
+            except Exception:
+                pass
+            self._temp_screenshot = None
+
         path = filedialog.askopenfilename(title="이미지 선택", filetypes=[("Image files", "*.png;*.jpg;*.jpeg;*.bmp;*.gif"), ("All files","*.*")])
         if path:
             self.image_path = path
             name = os.path.basename(path)
+            # truncate long filenames for display (append '...')
+            max_len = 12
+            if len(name) > max_len:
+                name = name[:max_len-3] + '...'
             self.lbl_image.config(text=name)
             # create and show a small thumbnail image next to the filename
             try:
@@ -346,6 +468,95 @@ class PaletteApp(tk.Tk):
                 self.img_thumbnail_label.config(image='')
             # Do NOT extract colors immediately; wait for Generate button.
             self.extracted_colors = []
+
+    def open_harmony_selector(self):
+        """Open a dialog to select which color harmony schemes to display."""
+        dialog = tk.Toplevel(self)
+        dialog.title("색상 조합 선택")
+        dialog.geometry("350x320")
+        dialog.resizable(False, False)
+        dialog.transient(self)
+        dialog.grab_set()
+
+        ttk.Label(dialog, text="표시할 색상 조합을 선택하세요:", font=('Segoe UI', 10, 'bold')).pack(pady=10, padx=10, anchor='w')
+
+        # Create a frame for checkboxes
+        frm_checks = ttk.Frame(dialog)
+        frm_checks.pack(padx=10, pady=5, fill='both', expand=True)
+
+        # Define harmony schemes with labels
+        schemes = [
+            ('complementary', '보색 (Complementary)'),
+            ('analogous', '유사색 (Analogous)'),
+            ('triadic', '삼각 조화색 (Triadic)'),
+            ('monochromatic', '단색 조화 (Monochromatic)'),
+            ('split_complementary', '스플릿 보색 (Split-Complementary)'),
+            ('square', '스퀘어 (Square)'),
+            ('tetradic', '테트라딕 (Tetradic)'),
+            ('double_complementary', '더블 보색 (Double-Complementary)')
+        ]
+
+        # Create checkbox variables
+        scheme_vars = {}
+        for scheme_key, scheme_label in schemes:
+            var = tk.BooleanVar(value=(scheme_key in self.selected_schemes))
+            scheme_vars[scheme_key] = var
+            cb = ttk.Checkbutton(frm_checks, text=scheme_label, variable=var)
+            cb.pack(anchor='w', pady=4)
+
+        # Buttons
+        frm_buttons = ttk.Frame(dialog)
+        frm_buttons.pack(pady=10)
+
+        def apply_selection():
+            self.selected_schemes = [key for key, var in scheme_vars.items() if var.get()]
+            if not self.selected_schemes:
+                messagebox.showwarning('선택 오류', '최소 하나의 색상 조합을 선택해야 합니다.')
+                return
+            dialog.destroy()
+            # Regenerate with new selection
+            self.generate()
+
+        def cancel():
+            dialog.destroy()
+
+        ttk.Button(frm_buttons, text="확인", command=apply_selection).grid(row=0, column=0, padx=5)
+        ttk.Button(frm_buttons, text="취소", command=cancel).grid(row=0, column=1, padx=5)
+
+    def _update_color_swatch(self, hex_color):
+        """Update the color swatch canvas to show the selected color and display hex/RGB info."""
+        try:
+            # Delete previous rectangles
+            self.color_swatch.delete("all")
+            # Draw rectangle that fills the entire canvas (70x48)
+            self.color_swatch.create_rectangle(0, 0, 70, 48, fill=hex_color, outline='', width=0)
+        except tk.TclError:
+            # fallback for invalid colors
+            self.color_swatch.delete("all")
+            self.color_swatch.create_rectangle(0, 0, 70, 48, fill="#ffffff", outline='', width=0)
+            hex_color = "#ffffff"
+        
+        # Convert hex to RGB and update the info label
+        try:
+            rgb = self.generator.hex_to_rgb(hex_color)
+            info_text = f"HEX: {hex_color}\nRGB: {rgb}"
+            self.lbl_color_info.config(text=info_text)
+        except Exception:
+            self.lbl_color_info.config(text=f"HEX: {hex_color}\nRGB: (?, ?, ?)")
+
+    def open_color_picker(self):
+        """Open color chooser dialog and update the selected color."""
+        # Get current color from hex_entry
+        current_color = self.hex_entry.get()
+        try:
+            # colorchooser.askcolor returns ((R,G,B), '#RRGGBB')
+            color_result = colorchooser.askcolor(color=current_color, title="색상 선택")
+            if color_result[1]:  # if user didn't cancel
+                hex_color = color_result[1]
+                self.hex_entry.set(hex_color)
+                self._update_color_swatch(hex_color)
+        except Exception as e:
+            messagebox.showerror("Color Picker Error", str(e))
 
     def start_screen_picker(self):
         """Begin screen color picker: make app transparent/hidden, capture screen,
@@ -452,24 +663,154 @@ class PaletteApp(tk.Tk):
             display_img = screen
 
         photo = ImageTk.PhotoImage(display_img)
-        lbl = tk.Label(picker, image=photo)
-        lbl.image = photo
-        lbl.place(x=0, y=0, width=width, height=height)
+        # If in image-mode extraction, use rectangle selection; otherwise use pixel picker
+        mode = self.source_type.get()
+        if mode == 'image':
+            # use canvas so we can draw selection rectangle
+            canvas = tk.Canvas(picker, width=width, height=height, highlightthickness=0)
+            canvas.photo = photo
+            canvas.create_image(0, 0, image=photo, anchor='nw')
+            canvas.pack(fill='both', expand=True)
+
+            # state for rectangle selection
+            canvas._rect_id = None
+            canvas._start = None
+
+            def on_press(e):
+                # record start in root coords
+                canvas._start = (e.x_root, e.y_root)
+                # remove any existing rect
+                if canvas._rect_id:
+                    canvas.delete(canvas._rect_id)
+                    canvas._rect_id = None
+
+            def on_drag(e):
+                if not canvas._start:
+                    return
+                x0_root, y0_root = canvas._start
+                x1_root, y1_root = e.x_root, e.y_root
+                # map to local display coords
+                lx0 = int((x0_root - x0) * (width / max(1, width)))
+                ly0 = int((y0_root - y0) * (height / max(1, height)))
+                lx1 = int((x1_root - x0) * (width / max(1, width)))
+                ly1 = int((y1_root - y0) * (height / max(1, height)))
+                # draw rectangle
+                if canvas._rect_id:
+                    canvas.coords(canvas._rect_id, lx0, ly0, lx1, ly1)
+                else:
+                    canvas._rect_id = canvas.create_rectangle(lx0, ly0, lx1, ly1, outline='red', width=2)
+
+            def on_release(e):
+                if not canvas._start:
+                    return
+                x0_root, y0_root = canvas._start
+                x1_root, y1_root = e.x_root, e.y_root
+                # compute region in original image coords
+                img_w, img_h = screen.size
+                vw, vh = width, height
+                scale_x = img_w / max(1, vw)
+                scale_y = img_h / max(1, vh)
+                sx = int((min(x0_root, x1_root) - x0) * scale_x)
+                sy = int((min(y0_root, y1_root) - y0) * scale_y)
+                ex = int((max(x0_root, x1_root) - x0) * scale_x)
+                ey = int((max(y0_root, y1_root) - y0) * scale_y)
+                # clamp
+                sx = max(0, min(img_w - 1, sx))
+                sy = max(0, min(img_h - 1, sy))
+                ex = max(0, min(img_w, ex))
+                ey = max(0, min(img_h, ey))
+                if ex <= sx or ey <= sy:
+                    # invalid
+                    canvas._start = None
+                    if canvas._rect_id:
+                        canvas.delete(canvas._rect_id)
+                        canvas._rect_id = None
+                    return
+
+                # crop region
+                region = screen.crop((sx, sy, ex, ey))
+
+                # save to temporary file for color extraction
+                try:
+                    temp_fd, temp_path = tempfile.mkstemp(suffix='.png')
+                    os.close(temp_fd)  # close the file descriptor
+                    region.save(temp_path)
+                except Exception as e:
+                    messagebox.showerror('Save Error', f'Failed to save screenshot region: {e}')
+                    canvas._start = None
+                    return
+
+                # close picker
+                try:
+                    picker.destroy()
+                except Exception:
+                    pass
+
+                # restore main window transparency / visibility
+                try:
+                    if getattr(self, '_did_withdraw', False):
+                        self.deiconify()
+                        self._did_withdraw = False
+                    else:
+                        # restore previous alpha if we changed it
+                        try:
+                            self.attributes('-alpha', self._prev_alpha)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                # set thumbnail and label
+                try:
+                    # display small thumbnail from region (in-memory)
+                    thumb = region.copy()
+                    thumb.thumbnail((48,48))
+                    photo_thumb = ImageTk.PhotoImage(thumb)
+                    self.img_thumbnail_label.config(image=photo_thumb)
+                    self.img_thumbnail = photo_thumb
+                    self.lbl_image.config(text='**스크린샷**')
+                    # set image_path to temp file so Generate can use it
+                    self.image_path = temp_path
+                    # store temp path for later cleanup
+                    self._temp_screenshot = temp_path
+                except Exception:
+                    try:
+                        os.unlink(temp_path)
+                    except Exception:
+                        pass
+
+                # extract colors from region using temp file (keep file for later Generate calls)
+                try:
+                    colors = self.generator.extract_main_colors(temp_path, num_colors=5)
+                    self.extracted_colors = colors
+                    # show extracted swatches in image mode
+                    if self.source_type.get() == 'image':
+                        self.show_extracted_swatches(colors)
+                except Exception:
+                    self.extracted_colors = []
+
+            # bind events for rectangle selection (no HUD while selecting)
+            canvas.bind('<Button-1>', on_press)
+            canvas.bind('<B1-Motion>', on_drag)
+            canvas.bind('<ButtonRelease-1>', on_release)
+        else:
+            lbl = tk.Label(picker, image=photo)
+            lbl.image = photo
+            lbl.place(x=0, y=0, width=width, height=height)
+
+            floating = tk.Label(picker, text='', bd=1, relief='solid', padx=12, pady=8, font=('Segoe UI', 14, 'bold'))
+            floating.place(x=20, y=20)
+
+            self._picker_win = picker
+            self._picker_floating = floating
+
+            picker.bind('<Motion>', self._on_picker_move)
+            picker.bind('<Button-1>', self._on_picker_click)
 
         # store virtual origin and size for coordinate mapping
         self._screen_origin = (x0, y0)
         self._virtual_size = (width, height)
 
-        # larger floating label for color preview
-        fl_font = ('Segoe UI', 14, 'bold')
-        floating = tk.Label(picker, text='', bd=1, relief='solid', padx=12, pady=8, font=fl_font)
-        floating.place(x=20, y=20)
-
-        self._picker_win = picker
-        self._picker_floating = floating
-
-        picker.bind('<Motion>', self._on_picker_move)
-        picker.bind('<Button-1>', self._on_picker_click)
         picker.focus_force()
 
     def _on_picker_move(self, event):
@@ -574,8 +915,8 @@ class PaletteApp(tk.Tk):
             pass
 
         try:
-            self.hex_entry.delete(0, 'end')
-            self.hex_entry.insert(0, hx)
+            self.hex_entry.set(hx)
+            self._update_color_swatch(hx)
             self.image_path = None
             self.extracted_colors = []
         except Exception:
@@ -816,8 +1157,16 @@ class PaletteApp(tk.Tk):
 
         rgb = self.generator.generate_random_color()
         hex_code = self.generator.rgb_to_hex(rgb)
-        self.hex_entry.delete(0, 'end')
-        self.hex_entry.insert(0, hex_code)
+        # hex_entry is a StringVar now
+        try:
+            self.hex_entry.set(hex_code)
+        except Exception:
+            pass
+        # update swatch and trigger generation
+        try:
+            self._update_color_swatch(hex_code)
+        except Exception:
+            pass
         self.generate()
 
     def clear_palette_display(self):
@@ -826,17 +1175,140 @@ class PaletteApp(tk.Tk):
 
     def draw_color_box(self, parent, hex_color, label_text):
         frm = ttk.Frame(parent)
-        frm.pack(fill='x', pady=6)
+        frm.pack(fill='x', pady=0, padx=0)  # Remove all padding
 
-        canvas = tk.Canvas(frm, width=120, height=50, bd=1, relief='solid')
-        canvas.pack(side='left')
+        canvas = tk.Canvas(frm, width=120, height=50, bd=0, relief='solid', highlightthickness=0, cursor='hand2')
+        canvas.pack(side='left', padx=0, pady=0)  # Remove padding
         try:
-            canvas.create_rectangle(0,0,120,50, fill=hex_color, outline='')
+            canvas.create_rectangle(0, 0, 120, 50, fill=hex_color, outline='', width=0)
         except tk.TclError:
-            canvas.create_rectangle(0,0,120,50, fill="#ffffff", outline='')
+            canvas.create_rectangle(0, 0, 120, 50, fill="#ffffff", outline='', width=0)
+
+        # clicking a color swatch should try to add the color to the selected saved palette
+        try:
+            canvas.bind('<Button-1>', lambda e, hx=hex_color: self.on_palette_color_click(hx))
+        except Exception:
+            pass
 
         lbl = ttk.Label(frm, text=f"{label_text}\n{hex_color}")
         lbl.pack(side='left', padx=10)
+
+    # --- Saved palettes management ---
+    def add_saved_palette(self):
+        """Add a new saved palette entry (start empty) and render the saved list.
+
+        Do NOT auto-preview or auto-select the new palette; user must click it to select.
+        """
+        name = f"새 팔레트{self._saved_counter + 1}"
+        self._saved_counter += 1
+
+        entry = {'name': name, 'colors': []}
+        self.saved_palettes.append(entry)
+        # do not auto-select or preview; just re-render to show the new empty palette
+        self.render_saved_list()
+
+    def remove_saved_palette(self):
+        # 항상 최소 1개 팔레트 이상 유지
+        if len(self.saved_palettes) <= 1:
+            messagebox.showinfo('최소 유지', '최소 1개의 팔레트는 유지되어야 합니다.')
+            return
+        if self._saved_selected is None:
+            return
+        idx = self._saved_selected
+        try:
+            del self.saved_palettes[idx]
+        except Exception:
+            return
+        # adjust selection
+        if not self.saved_palettes:
+            self._saved_selected = None
+        else:
+            self._saved_selected = max(0, idx - 1)
+        self.render_saved_list()
+
+    def on_saved_select(self):
+        # kept for backward compatibility; selection is handled by render callbacks
+        return
+
+    def preview_saved_palette(self, entry):
+        """Preview a saved palette in the main palette area (non-destructive)."""
+        # Clear current display but keep saved palettes intact
+        for w in self.palette_inner.winfo_children():
+            try:
+                w.destroy()
+            except Exception:
+                pass
+
+        ttk.Label(self.palette_inner, text=entry.get('name', '저장된 팔레트'), font=('Segoe UI', 10, 'bold')).pack(anchor='w')
+        sw_frame = ttk.Frame(self.palette_inner)
+        sw_frame.pack(fill='x', pady=(6,0))
+        for c in entry.get('colors', []):
+            try:
+                hx = c if isinstance(c, str) else self.generator.rgb_to_hex(c)
+            except Exception:
+                hx = '#ffffff'
+            box = tk.Canvas(sw_frame, width=48, height=48, highlightthickness=0, bd=0)
+            box.create_rectangle(0,0,48,48, fill=hx, outline=hx)
+            box.pack(side='left', padx=2)
+
+    def on_palette_color_click(self, hex_color):
+        """Handle clicks on palette swatches: add color to currently selected saved palette."""
+        if self._saved_selected is None:
+            messagebox.showinfo('선택 필요', '먼저 오른쪽에서 저장된 팔레트를 선택하세요.')
+            return
+        try:
+            entry = self.saved_palettes[self._saved_selected]
+            # append color (store as hex)
+            hx = hex_color if isinstance(hex_color, str) else self.generator.rgb_to_hex(hex_color)
+            entry['colors'].append(hx)
+            # re-render saved list to update the visual bar
+            self.render_saved_list()
+        except Exception:
+            pass
+
+    def render_saved_list(self):
+        """Rebuild the saved palettes UI in the right panel with light blue highlight for selected."""
+        for c in self.saved_list_container.winfo_children():
+            try:
+                c.destroy()
+            except Exception:
+                pass
+
+        for idx, entry in enumerate(self.saved_palettes):
+            # Use light blue background if selected
+            if self._saved_selected == idx:
+                ef = tk.Frame(self.saved_list_container, bg='#ADD8E6')  # light blue
+            else:
+                ef = tk.Frame(self.saved_list_container, bg='white')
+            ef.pack(fill='x', pady=4, padx=2)
+            # header with name
+            lbl = ttk.Label(ef, text=entry.get('name', f'팔레트{idx+1}'))
+            if self._saved_selected == idx:
+                lbl.config(background='#ADD8E6')  # light blue
+            else:
+                lbl.config(background='white')
+            lbl.pack(fill='x')
+            # clickable area to select this saved palette
+            def make_select(i):
+                return lambda e=None: self._select_saved_entry(i)
+            ef.bind('<Button-1>', make_select(idx))
+            lbl.bind('<Button-1>', make_select(idx))
+
+            # color bar: create N equally sized frames
+            bar = tk.Frame(ef)
+            bar.pack(fill='x', pady=(4,0), padx=0)
+            colors = entry.get('colors', []) or ['#000000']
+            for c in colors:
+                f = tk.Frame(bar, bg=c, height=28)
+                f.pack(side='left', fill='both', expand=True)
+
+        # ensure at least a small spacer
+        ttk.Frame(self.saved_list_container).pack(fill='both', expand=True)
+
+    def _select_saved_entry(self, idx):
+        self._saved_selected = idx
+        # do not clear main palette display; just re-render the saved list to show selection highlight
+        self.render_saved_list()
 
     def show_extracted_swatches(self, colors):
         """색상 목록(리스트 of RGB tuples)을 상단의 색상 탭 프레임에 표시합니다."""
@@ -908,53 +1380,73 @@ class PaletteApp(tk.Tk):
             ttk.Label(self.palette_inner, text="기본 색상", font=('Segoe UI', 10, 'bold')).pack(anchor='w')
             self.draw_color_box(self.palette_inner, base_hex, f"RGB: {palette['base']}")
 
-            ttk.Label(self.palette_inner, text="보색", font=('Segoe UI', 10, 'bold')).pack(anchor='w', pady=(8,0))
-            comp_hex = self.generator.rgb_to_hex(palette['complementary'])
-            self.draw_color_box(self.palette_inner, comp_hex, f"RGB: {palette['complementary']}")
+            # Display only selected harmony schemes
+            scheme_labels = {
+                'complementary': '보색',
+                'analogous': '유사색',
+                'triadic': '삼각 조화색',
+                'monochromatic': '단색 조화',
+                'split_complementary': '스플릿 보색',
+                'square': '스퀘어',
+                'tetradic': '테트라딕',
+                'double_complementary': '더블 보색'
+            }
 
-            ttk.Label(self.palette_inner, text="유사색", font=('Segoe UI', 10, 'bold')).pack(anchor='w', pady=(8,0))
-            for idx, col in enumerate(palette['analogous'], 1):
-                hx = self.generator.rgb_to_hex(col)
-                self.draw_color_box(self.palette_inner, hx, f"{idx}. RGB: {col}")
-
-            ttk.Label(self.palette_inner, text="삼각 조화색", font=('Segoe UI', 10, 'bold')).pack(anchor='w', pady=(8,0))
-            for idx, col in enumerate(palette['triadic'], 1):
-                hx = self.generator.rgb_to_hex(col)
-                self.draw_color_box(self.palette_inner, hx, f"{idx}. RGB: {col}")
-
-            ttk.Label(self.palette_inner, text="단색 조화", font=('Segoe UI', 10, 'bold')).pack(anchor='w', pady=(8,0))
-            for idx, col in enumerate(palette['monochromatic'], 1):
-                hx = self.generator.rgb_to_hex(col)
-                self.draw_color_box(self.palette_inner, hx, f"{idx}. RGB: {col}")
+            for scheme in self.selected_schemes:
+                if scheme not in palette:
+                    continue
+                colors = palette[scheme]
+                label = scheme_labels.get(scheme, scheme)
+                
+                ttk.Label(self.palette_inner, text=label, font=('Segoe UI', 10, 'bold')).pack(anchor='w', pady=(8,0), padx=0)
+                
+                # Handle single color vs list
+                if isinstance(colors, tuple) and len(colors) == 3 and all(isinstance(c, int) for c in colors):
+                    # Single color (e.g., complementary)
+                    hx = self.generator.rgb_to_hex(colors)
+                    self.draw_color_box(self.palette_inner, hx, f"RGB: {colors}")
+                else:
+                    # List of colors
+                    for idx, col in enumerate(colors, 1):
+                        hx = self.generator.rgb_to_hex(col)
+                        self.draw_color_box(self.palette_inner, hx, f"{idx}. RGB: {col}")
         else:
             # palettes is a list of palette dicts for the 5 main colors
             for i, p in enumerate(palettes, start=1):
-                ttk.Label(self.palette_inner, text=f"대표 색상 {i}", font=('Segoe UI', 10, 'bold')).pack(anchor='w', pady=(6,2))
+                ttk.Label(self.palette_inner, text=f"대표 색상 {i}", font=('Segoe UI', 10, 'bold')).pack(anchor='w', pady=(6,0), padx=0)
                 base_hex = self.generator.rgb_to_hex(p['base'])
                 self.draw_color_box(self.palette_inner, base_hex, f"Base RGB: {p['base']}")
 
-                # Complementary
-                ttk.Label(self.palette_inner, text="  보색", font=('Segoe UI', 9, 'bold')).pack(anchor='w')
-                comp_hex = self.generator.rgb_to_hex(p['complementary'])
-                self.draw_color_box(self.palette_inner, comp_hex, f"RGB: {p['complementary']}")
+                # Display only selected harmony schemes
+                scheme_labels = {
+                    'complementary': '보색',
+                    'analogous': '유사색',
+                    'triadic': '삼각 조화색',
+                    'monochromatic': '단색 조화',
+                    'split_complementary': '스플릿 보색',
+                    'square': '스퀘어',
+                    'tetradic': '테트라딕',
+                    'double_complementary': '더블 보색'
+                }
 
-                # Analogous
-                ttk.Label(self.palette_inner, text="  유사색", font=('Segoe UI', 9, 'bold')).pack(anchor='w')
-                for idx, col in enumerate(p['analogous'], 1):
-                    hx = self.generator.rgb_to_hex(col)
-                    self.draw_color_box(self.palette_inner, hx, f"{idx}. RGB: {col}")
-
-                # Triadic
-                ttk.Label(self.palette_inner, text="  삼각 조화색", font=('Segoe UI', 9, 'bold')).pack(anchor='w')
-                for idx, col in enumerate(p['triadic'], 1):
-                    hx = self.generator.rgb_to_hex(col)
-                    self.draw_color_box(self.palette_inner, hx, f"{idx}. RGB: {col}")
-
-                # Monochromatic
-                ttk.Label(self.palette_inner, text="  단색 조화", font=('Segoe UI', 9, 'bold')).pack(anchor='w')
-                for idx, col in enumerate(p['monochromatic'], 1):
-                    hx = self.generator.rgb_to_hex(col)
-                    self.draw_color_box(self.palette_inner, hx, f"{idx}. RGB: {col}")
+                for scheme in self.selected_schemes:
+                    if scheme not in p:
+                        continue
+                    colors = p[scheme]
+                    label = scheme_labels.get(scheme, scheme)
+                    
+                    ttk.Label(self.palette_inner, text=f"  {label}", font=('Segoe UI', 9, 'bold')).pack(anchor='w', padx=0)
+                    
+                    # Handle single color vs list
+                    if isinstance(colors, tuple) and len(colors) == 3 and all(isinstance(c, int) for c in colors):
+                        # Single color
+                        hx = self.generator.rgb_to_hex(colors)
+                        self.draw_color_box(self.palette_inner, hx, f"RGB: {colors}")
+                    else:
+                        # List of colors
+                        for idx, col in enumerate(colors, 1):
+                            hx = self.generator.rgb_to_hex(col)
+                            self.draw_color_box(self.palette_inner, hx, f"{idx}. RGB: {col}")
 
 if __name__ == "__main__":
     app = PaletteApp()
