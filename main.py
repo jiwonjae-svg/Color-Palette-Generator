@@ -372,15 +372,70 @@ class PaletteApp(tk.Tk):
         self.frm_saved.pack(side='right', fill='y')
 
         ttk.Label(self.frm_saved, text='저장된 팔레트', font=('Segoe UI', 10, 'bold')).pack(anchor='nw')
-        # container for saved palette entries (custom rendered so we can show color bars)
-        self.saved_list_container = ttk.Frame(self.frm_saved)
-        self.saved_list_container.pack(fill='both', expand=True, pady=(6,6))
+        
+        # scrollable container for saved palette entries
+        list_frame = ttk.Frame(self.frm_saved)
+        list_frame.pack(fill='both', expand=True, pady=(6,6))
+        
+        self.saved_canvas = tk.Canvas(list_frame, borderwidth=0, highlightthickness=0, bg='white', width=200)
+        scrollbar = ttk.Scrollbar(list_frame, orient='vertical', command=self.saved_canvas.yview)
+        self.saved_list_container = tk.Frame(self.saved_canvas, bg='white')
+        
+        self.saved_list_container.bind(
+            '<Configure>',
+            lambda e: self.saved_canvas.configure(scrollregion=self.saved_canvas.bbox('all'))
+        )
+        
+        self.saved_canvas.create_window((0, 0), window=self.saved_list_container, anchor='nw')
+        self.saved_canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # bind canvas resize to update window width (with margin)
+        def on_canvas_configure(e):
+            # set width to canvas width minus scrollbar width and some margin
+            new_width = e.width - 20
+            if self.saved_canvas.find_withtag('all'):
+                self.saved_canvas.itemconfig(self.saved_canvas.find_withtag('all')[0], width=new_width)
+        self.saved_canvas.bind('<Configure>', on_canvas_configure)
+        
+        # enable mousewheel scrolling when mouse is over canvas or its parent (list_frame)
+        def on_enter_region(e):
+            def on_mousewheel(event):
+                self.saved_canvas.yview_scroll(int(-1*(event.delta/120)), 'units')
+            self.saved_canvas.bind_all('<MouseWheel>', on_mousewheel)
+            
+        def on_leave_region(e):
+            self.saved_canvas.unbind_all('<MouseWheel>')
+            
+        self.saved_canvas.bind('<Enter>', on_enter_region)
+        self.saved_canvas.bind('<Leave>', on_leave_region)
+        list_frame.bind('<Enter>', on_enter_region)
+        list_frame.bind('<Leave>', on_leave_region)
+        self.saved_list_container.bind('<Enter>', on_enter_region)
+        self.saved_list_container.bind('<Leave>', on_leave_region)
+        
+        self.saved_canvas.pack(side='left', fill='both', expand=True)
+        scrollbar.pack(side='right', fill='y')
 
-        # buttons: add / remove
+        # buttons: add / remove / copy / load (fixed at bottom)
         btns = ttk.Frame(self.frm_saved)
-        btns.pack(pady=(4,0))
-        ttk.Button(btns, text='팔레트 추가', command=self.add_saved_palette).grid(row=0, column=0, padx=4)
-        ttk.Button(btns, text='팔레트 제거', command=self.remove_saved_palette).grid(row=0, column=1, padx=4)
+        btns.pack(side='bottom', pady=(4,0))
+        
+        # Create buttons with emojis and tooltips
+        btn_add = tk.Button(btns, text='➕', font=('Arial', 12), command=self.add_saved_palette, width=3, bg='white', activebackground='#f0f0f0')
+        btn_add.grid(row=0, column=0, padx=2)
+        self.create_tooltip(btn_add, '팔레트 추가')
+        
+        btn_delete = tk.Button(btns, text='❌', font=('Arial', 12), command=self.remove_saved_palette, width=3, bg='white', activebackground='#f0f0f0')
+        btn_delete.grid(row=0, column=1, padx=2)
+        self.create_tooltip(btn_delete, '팔레트 제거')
+        
+        btn_copy = tk.Button(btns, text='📋', font=('Arial', 12), command=self.copy_palette, width=3, bg='white', activebackground='#f0f0f0')
+        btn_copy.grid(row=0, column=2, padx=2)
+        self.create_tooltip(btn_copy, '팔레트 복사')
+        
+        btn_load = tk.Button(btns, text='📂', font=('Arial', 12), command=self.load_palette, width=3, bg='white', activebackground='#f0f0f0')
+        btn_load.grid(row=0, column=3, padx=2)
+        self.create_tooltip(btn_load, '팔레트 불러오기')
 
         # storage for saved palettes (in-memory)
         self.saved_palettes = []  # list of dicts: {'name': str, 'colors': [hex,...]}
@@ -1294,6 +1349,12 @@ class PaletteApp(tk.Tk):
             ef.bind('<Button-1>', make_select(idx))
             lbl.bind('<Button-1>', make_select(idx))
 
+            # right-click context menu
+            def make_context_menu(i):
+                return lambda e: self.show_palette_context_menu(i, e)
+            ef.bind('<Button-3>', make_context_menu(idx))
+            lbl.bind('<Button-3>', make_context_menu(idx))
+
             # color bar: create N equally sized frames
             bar = tk.Frame(ef)
             bar.pack(fill='x', pady=(4,0), padx=0)
@@ -1302,13 +1363,178 @@ class PaletteApp(tk.Tk):
                 f = tk.Frame(bar, bg=c, height=28)
                 f.pack(side='left', fill='both', expand=True)
 
-        # ensure at least a small spacer
-        ttk.Frame(self.saved_list_container).pack(fill='both', expand=True)
-
     def _select_saved_entry(self, idx):
         self._saved_selected = idx
         # do not clear main palette display; just re-render the saved list to show selection highlight
         self.render_saved_list()
+
+    def show_palette_context_menu(self, idx, event):
+        """Show context menu for palette operations."""
+        self._saved_selected = idx
+        self.render_saved_list()
+        
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label='이름 바꾸기', command=lambda: self.rename_palette(idx))
+        menu.add_command(label='팔레트 편집', command=lambda: self.open_palette_editor(idx))
+        menu.add_command(label='팔레트 저장', command=lambda: self.save_palette_file(idx))
+        menu.add_separator()
+        menu.add_command(label='밸류로 보기', command=lambda: self.toggle_palette_view(idx))
+        
+        try:
+            menu.post(event.x_root, event.y_root)
+        except Exception:
+            pass
+
+    def rename_palette(self, idx):
+        """Allow inline editing of palette name."""
+        try:
+            entry = self.saved_palettes[idx]
+            old_name = entry['name']
+            
+            # Create a simple dialog for renaming
+            dialog = tk.Toplevel(self)
+            dialog.title('이름 바꾸기')
+            dialog.geometry('300x100')
+            dialog.resizable(False, False)
+            dialog.transient(self)
+            dialog.grab_set()
+            
+            ttk.Label(dialog, text='새 이름:').pack(pady=10)
+            entry_name = ttk.Entry(dialog)
+            entry_name.pack(padx=10, pady=5, fill='x')
+            entry_name.insert(0, old_name)
+            entry_name.focus()
+            entry_name.select_range(0, len(old_name))
+            
+            def save_name():
+                new_name = entry_name.get().strip()
+                if new_name:
+                    self.saved_palettes[idx]['name'] = new_name
+                    self.render_saved_list()
+                dialog.destroy()
+            
+            ttk.Button(dialog, text='확인', command=save_name).pack(side='left', padx=5, pady=10)
+            ttk.Button(dialog, text='취소', command=dialog.destroy).pack(side='left', padx=5, pady=10)
+        except Exception as e:
+            messagebox.showerror('오류', str(e))
+
+    def open_palette_editor(self, idx):
+        """Open editor window for palette colors."""
+        try:
+            entry = self.saved_palettes[idx]
+            editor_dialog = tk.Toplevel(self)
+            editor_dialog.title(f'팔레트 편집 - {entry["name"]}')
+            editor_dialog.geometry('500x300')
+            editor_dialog.resizable(True, True)
+            editor_dialog.transient(self)
+            editor_dialog.grab_set()
+            
+            # Store working copy of colors
+            working_colors = entry['colors'].copy() if entry['colors'] else ['#000000']
+            selected_color_idx = [None]  # use list to make it mutable in nested functions
+            
+            # Top: color bar display
+            bar_frame = ttk.Frame(editor_dialog)
+            bar_frame.pack(fill='both', expand=True, padx=10, pady=10)
+            
+            self.palette_editor_bar = tk.Canvas(bar_frame, bg='white', height=50, highlightthickness=1)
+            self.palette_editor_bar.pack(fill='both', expand=True)
+            
+            def draw_colors():
+                self.palette_editor_bar.delete('all')
+                if not working_colors:
+                    self.palette_editor_bar.create_rectangle(0, 0, 500, 50, fill='#000000')
+                    return
+                
+                box_width = self.palette_editor_bar.winfo_width() / len(working_colors)
+                if box_width < 1:
+                    box_width = 50
+                
+                for i, color in enumerate(working_colors):
+                    x0 = i * box_width
+                    x1 = (i + 1) * box_width
+                    
+                    # Draw color box
+                    self.palette_editor_bar.create_rectangle(x0, 0, x1, 50, fill=color, outline='')
+                    
+                    # Draw selection border if selected
+                    if selected_color_idx[0] == i:
+                        lum = self.get_luminance(color)
+                        border_color = '#000000' if lum > 128 else '#ffffff'
+                        self.palette_editor_bar.create_rectangle(x0, 0, x1, 50, outline=border_color, width=3)
+                    
+                    # Bind click event
+                    def make_click(color_i):
+                        def on_click(e):
+                            selected_color_idx[0] = color_i
+                            draw_colors()
+                        return on_click
+                    self.palette_editor_bar.tag_bind(f'color_{i}', '<Button-1>', make_click(i))
+            
+            # Bind to draw on resize
+            self.palette_editor_bar.bind('<Configure>', lambda e: draw_colors())
+            editor_dialog.after(100, draw_colors)
+            
+            # Bottom: buttons
+            btn_frame = ttk.Frame(editor_dialog)
+            btn_frame.pack(fill='x', padx=10, pady=10)
+            
+            def add_color():
+                if selected_color_idx[0] is None:
+                    selected_color_idx[0] = 0
+                
+                color_result = colorchooser.askcolor(title='색상 추가')
+                if color_result[1]:
+                    hex_color = color_result[1]
+                    working_colors.insert(selected_color_idx[0], hex_color)
+                    draw_colors()
+            
+            def delete_color():
+                if selected_color_idx[0] is not None:
+                    working_colors.pop(selected_color_idx[0])
+                    if working_colors:
+                        selected_color_idx[0] = max(0, selected_color_idx[0] - 1)
+                    else:
+                        selected_color_idx[0] = None
+                        working_colors.append('#000000')
+                    draw_colors()
+            
+            def confirm():
+                entry['colors'] = working_colors.copy()
+                self.render_saved_list()
+                editor_dialog.destroy()
+            
+            # Left group: Add/Delete
+            left_btns = ttk.Frame(btn_frame)
+            left_btns.pack(side='left')
+            ttk.Button(left_btns, text='색상 추가', command=add_color).pack(side='left', padx=5)
+            ttk.Button(left_btns, text='색상 삭제', command=delete_color).pack(side='left', padx=5)
+            
+            # Right group: Confirm/Cancel
+            right_btns = ttk.Frame(btn_frame)
+            right_btns.pack(side='right')
+            ttk.Button(right_btns, text='확인', command=confirm).pack(side='left', padx=5)
+            ttk.Button(right_btns, text='취소', command=editor_dialog.destroy).pack(side='left', padx=5)
+            
+        except Exception as e:
+            messagebox.showerror('오류', str(e))
+
+    def get_luminance(self, hex_color):
+        """Calculate luminance (brightness) of a color (0-255)."""
+        try:
+            rgb = self.generator.hex_to_rgb(hex_color)
+            lum = int(0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2])
+            return lum
+        except Exception:
+            return 128
+
+    def save_palette_file(self, idx):
+        """Save palette to file."""
+        messagebox.showinfo('저장', '팔레트 저장 기능은 준비 중입니다.')
+
+    def toggle_palette_view(self, idx):
+        """Toggle between RGB and Value (luminance) view."""
+        messagebox.showinfo('밸류 보기', '밸류 보기 기능은 준비 중입니다.')
 
     def show_extracted_swatches(self, colors):
         """색상 목록(리스트 of RGB tuples)을 상단의 색상 탭 프레임에 표시합니다."""
@@ -1447,6 +1673,46 @@ class PaletteApp(tk.Tk):
                         for idx, col in enumerate(colors, 1):
                             hx = self.generator.rgb_to_hex(col)
                             self.draw_color_box(self.palette_inner, hx, f"{idx}. RGB: {col}")
+
+    def create_tooltip(self, widget, text):
+        """Create a tooltip for a widget."""
+        def on_enter(e):
+            tooltip = tk.Toplevel()
+            tooltip.wm_overrideredirect(True)
+            tooltip.wm_geometry(f"+{e.x_root+10}+{e.y_root+10}")
+            label = tk.Label(tooltip, text=text, background='#ffffe0', relief='solid', borderwidth=1, font=('Arial', 9))
+            label.pack()
+            widget.tooltip = tooltip
+        
+        def on_leave(e):
+            if hasattr(widget, 'tooltip'):
+                widget.tooltip.destroy()
+                del widget.tooltip
+        
+        widget.bind('<Enter>', on_enter)
+        widget.bind('<Leave>', on_leave)
+
+    def copy_palette(self):
+        """Copy currently selected palette."""
+        if self._saved_selected is None:
+            messagebox.showinfo('선택 필요', '팔레트를 선택해주세요.')
+            return
+        try:
+            entry = self.saved_palettes[self._saved_selected]
+            new_entry = {
+                'name': f"{entry['name']} (복사)",
+                'colors': entry['colors'].copy()
+            }
+            self.saved_palettes.append(new_entry)
+            self._saved_selected = len(self.saved_palettes) - 1
+            self.render_saved_list()
+            messagebox.showinfo('완료', '팔레트가 복사되었습니다.')
+        except Exception as e:
+            messagebox.showerror('오류', str(e))
+
+    def load_palette(self):
+        """Load palette from file."""
+        messagebox.showinfo('불러오기', '팔레트 불러오기 기능은 준비 중입니다.')
 
 if __name__ == "__main__":
     app = PaletteApp()
