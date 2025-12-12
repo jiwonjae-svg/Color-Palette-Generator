@@ -1,4 +1,4 @@
-from PIL import Image, ImageTk, ImageGrab
+from PIL import Image, ImageTk, ImageGrab, ImageDraw
 import colorsys
 from collections import Counter
 import tkinter as tk
@@ -7,6 +7,9 @@ import os
 import random
 import datetime
 import tempfile
+import logging
+from cryptography.fernet import Fernet
+import hashlib
 
 class ColorPaletteGenerator:
     def __init__(self):
@@ -275,7 +278,6 @@ class ColorPaletteGenerator:
 class PaletteApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Color Palette Generator")
         self.geometry("700x520")
         self.resizable(False, False)
         self.generator = ColorPaletteGenerator()
@@ -283,18 +285,42 @@ class PaletteApp(tk.Tk):
         self._temp_screenshot = None  # track temp screenshot file for cleanup
         # Default selected harmony schemes
         self.selected_schemes = ['complementary', 'analogous', 'triadic', 'monochromatic']
+        
+        # Track current file and modified state
+        self.current_file = None
+        self.is_modified = False
+        
+        # Setup logging
+        self.setup_logging()
+        self.log_action("Application started")
+        
+        # Setup window close protocol
+        self.protocol("WM_DELETE_WINDOW", self.on_closing)
 
         self.create_widgets()
+        
+        # Update title after widgets are created
+        self.update_title()
     
     def create_widgets(self):
         frm_top = ttk.Frame(self, padding=10)
         frm_top.pack(fill='x')
 
-        # Menu bar (File -> Save / Load)
+        # Menu bar (File -> New PGF / Save PGF / Save As / Open PGF / Open Recent / Exit)
         menubar = tk.Menu(self)
         filemenu = tk.Menu(menubar, tearoff=0)
-        filemenu.add_command(label='Save...', command=self.save_as_dialog)
-        filemenu.add_command(label='Load...', command=self.load_not_implemented)
+        filemenu.add_command(label='New PGF...', command=self.new_pgf)
+        filemenu.add_command(label='Save PGF...', command=self.save_pgf)
+        filemenu.add_command(label='Save As...', command=self.save_pgf_as)
+        filemenu.add_command(label='Open PGF...', command=self.load_pgf)
+        
+        # Open Recent submenu
+        self.recent_menu = tk.Menu(filemenu, tearoff=0)
+        filemenu.add_cascade(label='Open Recent', menu=self.recent_menu)
+        self.update_recent_menu()
+        
+        filemenu.add_separator()
+        filemenu.add_command(label='Exit', command=self.quit)
         menubar.add_cascade(label='File', menu=filemenu)
         self.config(menu=menubar)
 
@@ -371,7 +397,29 @@ class PaletteApp(tk.Tk):
         self.frm_saved = ttk.Frame(content, padding=(6,6))
         self.frm_saved.pack(side='right', fill='y')
 
-        ttk.Label(self.frm_saved, text='저장된 팔레트', font=('Segoe UI', 10, 'bold')).pack(anchor='nw')
+        ttk.Label(self.frm_saved, text='저장된 팔레트', font=('Segoe UI', 10, 'bold')).pack(anchor='nw', side='top')
+        
+        # buttons: add / remove / copy / load (fixed at bottom - pack first)
+        btns = tk.Frame(self.frm_saved, bg='#f0f0f0', height=40)
+        btns.pack(side='bottom', fill='x', pady=(4,0))
+        btns.pack_propagate(False)
+        
+        # Create buttons with emojis and tooltips
+        btn_add = tk.Button(btns, text='➕', font=('Arial', 14), command=self.add_saved_palette, width=3, bg='#f0f0f0', relief='flat', cursor='hand2')
+        btn_add.pack(side='left', padx=4, pady=5)
+        self.create_tooltip(btn_add, '팔레트 추가')
+        
+        btn_delete = tk.Button(btns, text='❌', font=('Arial', 14), command=self.remove_saved_palette, width=3, bg='#f0f0f0', relief='flat', cursor='hand2')
+        btn_delete.pack(side='left', padx=4, pady=5)
+        self.create_tooltip(btn_delete, '팔레트 제거')
+        
+        btn_copy = tk.Button(btns, text='📋', font=('Arial', 14), command=self.copy_palette, width=3, bg='#f0f0f0', relief='flat', cursor='hand2')
+        btn_copy.pack(side='left', padx=4, pady=5)
+        self.create_tooltip(btn_copy, '팔레트 복사')
+        
+        btn_load = tk.Button(btns, text='📂', font=('Arial', 14), command=self.load_palette, width=3, bg='#f0f0f0', relief='flat', cursor='hand2')
+        btn_load.pack(side='left', padx=4, pady=5)
+        self.create_tooltip(btn_load, '팔레트 불러오기')
         
         # scrollable container for saved palette entries
         list_frame = ttk.Frame(self.frm_saved)
@@ -397,53 +445,45 @@ class PaletteApp(tk.Tk):
                 self.saved_canvas.itemconfig(self.saved_canvas.find_withtag('all')[0], width=new_width)
         self.saved_canvas.bind('<Configure>', on_canvas_configure)
         
-        # enable mousewheel scrolling when mouse is over canvas or its parent (list_frame)
-        def on_enter_region(e):
-            def on_mousewheel(event):
-                self.saved_canvas.yview_scroll(int(-1*(event.delta/120)), 'units')
-            self.saved_canvas.bind_all('<MouseWheel>', on_mousewheel)
-            
-        def on_leave_region(e):
-            self.saved_canvas.unbind_all('<MouseWheel>')
-            
-        self.saved_canvas.bind('<Enter>', on_enter_region)
-        self.saved_canvas.bind('<Leave>', on_leave_region)
-        list_frame.bind('<Enter>', on_enter_region)
-        list_frame.bind('<Leave>', on_leave_region)
-        self.saved_list_container.bind('<Enter>', on_enter_region)
-        self.saved_list_container.bind('<Leave>', on_leave_region)
+        # enable mousewheel scrolling when mouse is over any part of the saved palette region
+        def on_mousewheel(e):
+            # Only scroll if scrollbar is actually needed
+            try:
+                bbox = self.saved_canvas.bbox('all')
+                canvas_height = self.saved_canvas.winfo_height()
+                if bbox and bbox[3] > canvas_height:
+                    self.saved_canvas.yview_scroll(int(-1*(e.delta/120)), 'units')
+            except Exception:
+                pass
+        
+        # Store handler for rebinding after render
+        self._saved_scroll_handler = on_mousewheel
+        
+        # Bind to all widgets in the saved palette region
+        def bind_scroll_recursive(widget):
+            try:
+                widget.bind('<MouseWheel>', on_mousewheel, add='+')
+                for child in widget.winfo_children():
+                    bind_scroll_recursive(child)
+            except Exception:
+                pass
+        
+        bind_scroll_recursive(self.frm_saved)
+        self.frm_saved.bind('<MouseWheel>', on_mousewheel)
         
         self.saved_canvas.pack(side='left', fill='both', expand=True)
         scrollbar.pack(side='right', fill='y')
-
-        # buttons: add / remove / copy / load (fixed at bottom)
-        btns = ttk.Frame(self.frm_saved)
-        btns.pack(side='bottom', pady=(4,0))
-        
-        # Create buttons with emojis and tooltips
-        btn_add = tk.Button(btns, text='➕', font=('Arial', 12), command=self.add_saved_palette, width=3, bg='white', activebackground='#f0f0f0')
-        btn_add.grid(row=0, column=0, padx=2)
-        self.create_tooltip(btn_add, '팔레트 추가')
-        
-        btn_delete = tk.Button(btns, text='❌', font=('Arial', 12), command=self.remove_saved_palette, width=3, bg='white', activebackground='#f0f0f0')
-        btn_delete.grid(row=0, column=1, padx=2)
-        self.create_tooltip(btn_delete, '팔레트 제거')
-        
-        btn_copy = tk.Button(btns, text='📋', font=('Arial', 12), command=self.copy_palette, width=3, bg='white', activebackground='#f0f0f0')
-        btn_copy.grid(row=0, column=2, padx=2)
-        self.create_tooltip(btn_copy, '팔레트 복사')
-        
-        btn_load = tk.Button(btns, text='📂', font=('Arial', 12), command=self.load_palette, width=3, bg='white', activebackground='#f0f0f0')
-        btn_load.grid(row=0, column=3, padx=2)
-        self.create_tooltip(btn_load, '팔레트 불러오기')
 
         # storage for saved palettes (in-memory)
         self.saved_palettes = []  # list of dicts: {'name': str, 'colors': [hex,...]}
         self._saved_counter = 0
         self._saved_selected = None  # index of selected saved palette
 
-        # create initial saved palette
-        self.add_saved_palette()
+        # create initial saved palette (without triggering mark_modified)
+        name = f"새 팔레트{self._saved_counter + 1}"
+        self._saved_counter += 1
+        entry = {'name': name, 'colors': []}
+        self.saved_palettes.append(entry)
         # select the first one by default
         if self.saved_palettes:
             self._saved_selected = 0
@@ -458,14 +498,39 @@ class PaletteApp(tk.Tk):
                 pass
 
         # Scrollable canvas for palette (in case of small screens)
-        canvas = tk.Canvas(self.frm_palette, borderwidth=0, highlightthickness=0)
-        self.palette_inner = ttk.Frame(canvas)
-        vsb = ttk.Scrollbar(self.frm_palette, orient="vertical", command=canvas.yview)
-        canvas.configure(yscrollcommand=vsb.set)
-        vsb.pack(side="right", fill="y")
-        canvas.pack(side="left", fill="both", expand=True)
-        canvas.create_window((0,0), window=self.palette_inner, anchor="nw")
-        self.palette_inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        self.palette_canvas = tk.Canvas(self.frm_palette, borderwidth=0, highlightthickness=0)
+        self.palette_inner = ttk.Frame(self.palette_canvas)
+        self.palette_vsb = ttk.Scrollbar(self.frm_palette, orient="vertical", command=self.palette_canvas.yview)
+        self.palette_canvas.configure(yscrollcommand=self.palette_vsb.set)
+        self.palette_vsb.pack(side="right", fill="y")
+        self.palette_canvas.pack(side="left", fill="both", expand=True)
+        self.palette_canvas.create_window((0,0), window=self.palette_inner, anchor="nw")
+        self.palette_inner.bind("<Configure>", lambda e: self.palette_canvas.configure(scrollregion=self.palette_canvas.bbox("all")))
+        
+        # Enable mousewheel scrolling for main palette area
+        def on_palette_mousewheel(e):
+            try:
+                bbox = self.palette_canvas.bbox('all')
+                canvas_height = self.palette_canvas.winfo_height()
+                if bbox and bbox[3] > canvas_height:
+                    self.palette_canvas.yview_scroll(int(-1*(e.delta/120)), 'units')
+            except Exception:
+                pass
+        
+        # Store handler for rebinding after display updates
+        self._palette_scroll_handler = on_palette_mousewheel
+        
+        # Bind to palette region widgets
+        def bind_palette_scroll_recursive(widget):
+            try:
+                widget.bind('<MouseWheel>', on_palette_mousewheel, add='+')
+                for child in widget.winfo_children():
+                    bind_palette_scroll_recursive(child)
+            except Exception:
+                pass
+        
+        bind_palette_scroll_recursive(self.frm_palette)
+        self.frm_palette.bind('<MouseWheel>', on_palette_mousewheel)
 
         # Initial generate
         self.on_source_change()
@@ -1065,38 +1130,378 @@ class PaletteApp(tk.Tk):
 
         messagebox.showinfo('Saved', f'Saved {len(saved)} png file(s) to {dest_dir}')
 
-    def save_as_dialog(self):
-        """Open a save-as dialog to save all current palettes into a single file (txt or png)."""
-        if not getattr(self, 'current_palettes', None):
-            messagebox.showwarning('No palettes', 'Generate a palette first before saving.')
-            return
+    def new_pgf(self):
+        """Create a new PGF workspace."""
+        # Ask to save if modified
+        if self.is_modified:
+            response = messagebox.askyesnocancel('저장', '현재 작업을 저장하시겠습니까?')
+            if response is None:  # Cancel
+                return
+            elif response:  # Yes
+                saved = self.save_pgf()
+                if not saved:  # User cancelled save dialog
+                    return
+        
+        # Reset to default state
+        self.saved_palettes = [{'name': '새 팔레트1', 'colors': []}]
+        self.selected_schemes = ['complementary', 'analogous', 'triadic', 'monochromatic']
+        self.source_type.set('hex')
+        self.hex_entry.set('#3498db')
+        self.current_palettes = []
+        self._saved_counter = 1
+        self._saved_selected = 0
+        self.current_file = None
+        
+        # Update UI
+        self._update_color_swatch('#3498db')
+        self.on_source_change()
+        self.render_saved_list()
+        self.clear_palette_display()
+        # Don't call generate() to avoid marking as modified
+        # User can manually generate when needed
+        
+        # Now mark as not modified AFTER UI updates
+        self.is_modified = False
+        self.update_title()
+        self.log_action("Created new workspace")
 
-        filetypes = [('Text file', '*.txt'), ('PNG image', '*.png'), ('PGF file', '*.pgf')]
-        path = filedialog.asksaveasfilename(title='Save palettes as...', initialdir=self.saves_root,
-                                            defaultextension='.txt', filetypes=filetypes)
-        if not path:
-            return
-
-        ext = os.path.splitext(path)[1].lower()
-        if ext == '.txt':
-            try:
-                self.save_palettes_to_single_txt(path)
-                messagebox.showinfo('Saved', f'Saved palettes to {path}')
-            except Exception as e:
-                messagebox.showerror('Save Error', str(e))
-        elif ext == '.png':
-            try:
-                self.save_palettes_to_single_png(path)
-                messagebox.showinfo('Saved', f'Saved palettes to {path}')
-            except Exception as e:
-                messagebox.showerror('Save Error', str(e))
-        elif ext == '.pgf':
-            messagebox.showinfo('Not implemented', 'PGF save is not implemented yet.')
+    def update_title(self):
+        """Update window title with filename and modified state."""
+        base_title = "Color Palette Generator"
+        if self.current_file:
+            filename = os.path.basename(self.current_file)
+            title = f"{base_title} - {filename}"
         else:
-            messagebox.showerror('Save Error', 'Unsupported file extension')
+            title = f"{base_title} - 제목없음"
+        
+        if self.is_modified:
+            title += " *"
+        
+        self.title(title)
 
-    def load_not_implemented(self):
-        messagebox.showinfo('Not implemented', 'Load feature is not implemented yet.')
+    def mark_modified(self):
+        """Mark workspace as modified."""
+        if not self.is_modified:
+            self.is_modified = True
+            self.update_title()
+
+    def save_pgf(self):
+        """Save entire workspace state to encrypted PGF file. Returns True if saved, False if cancelled."""
+        # If file already exists, save directly without dialog
+        if self.current_file:
+            return self._save_to_file(self.current_file)
+        else:
+            # No current file, behave like Save As
+            return self.save_pgf_as()
+    
+    def save_pgf_as(self):
+        """Save As: Always prompt for new file location. Disabled if no current file."""
+        try:
+            # Disabled if no file is being worked on
+            if not self.current_file and not self.is_modified:
+                return False
+            
+            path = filedialog.asksaveasfilename(
+                title='Save As...', 
+                initialdir=self.saves_root,
+                defaultextension='.pgf', 
+                filetypes=[('PGF file', '*.pgf')]
+            )
+            if not path:
+                return False
+            
+            result = self._save_to_file(path)
+            if result:
+                self.log_action(f"Saved workspace as: {path}")
+            return result
+        except Exception as e:
+            messagebox.showerror('Save Error', f'Failed to save: {str(e)}')
+            self.log_action(f"Save As failed: {str(e)}")
+            return False
+    
+    def _save_to_file(self, path):
+        """Internal method to save workspace to a specific file path using AES encryption."""
+        try:
+            import json
+            
+            # Collect all workspace state
+            workspace_data = {
+                'saved_palettes': self.saved_palettes,
+                'selected_schemes': self.selected_schemes,
+                'source_type': self.source_type.get(),
+                'hex_entry': self.hex_entry.get(),
+                'current_palettes': getattr(self, 'current_palettes', []),
+                'saved_counter': self._saved_counter,
+                'saved_selected': self._saved_selected
+            }
+            
+            # Encrypt and save using AES
+            data_json = json.dumps(workspace_data)
+            encrypted = self._encrypt_aes(data_json)
+            
+            with open(path, 'wb') as f:
+                f.write(encrypted)
+            
+            # Update state
+            self.current_file = path
+            self.is_modified = False
+            self.update_title()
+            
+            # Add to recent files
+            self.add_recent_file(path)
+            messagebox.showinfo('Saved', f'Workspace saved to {path}')
+            self.log_action(f"Saved workspace: {path}")
+            return True
+        except Exception as e:
+            messagebox.showerror('Save Error', f'Failed to save: {str(e)}')
+            self.log_action(f"Save failed: {str(e)}")
+            return False
+    
+    def load_pgf(self):
+        """Load workspace state from encrypted PGF file."""
+        try:
+            path = filedialog.askopenfilename(
+                title='Open PGF...', 
+                initialdir=self.saves_root,
+                filetypes=[('PGF file', '*.pgf')]
+            )
+            if not path:
+                return
+            
+            import json
+            
+            # Read and decrypt using AES
+            with open(path, 'rb') as f:
+                encrypted = f.read()
+            
+            data_json = self._decrypt_aes(encrypted)
+            workspace_data = json.loads(data_json)
+            
+            # Restore workspace state
+            self.saved_palettes = workspace_data.get('saved_palettes', [])
+            self.selected_schemes = workspace_data.get('selected_schemes', ['complementary', 'analogous', 'triadic', 'monochromatic'])
+            self.source_type.set(workspace_data.get('source_type', 'hex'))
+            self.hex_entry.set(workspace_data.get('hex_entry', '#3498db'))
+            self.current_palettes = workspace_data.get('current_palettes', [])
+            self._saved_counter = workspace_data.get('saved_counter', 0)
+            self._saved_selected = workspace_data.get('saved_selected', None)
+            
+            # Update UI
+            self._update_color_swatch(self.hex_entry.get())
+            self.on_source_change()
+            self.render_saved_list()
+            if self.current_palettes:
+                self.clear_palette_display()
+                # Re-render current palettes
+                source_type = self.source_type.get()
+                if source_type == 'hex' and self.current_palettes:
+                    palette = self.current_palettes[0]
+                    self.display_single_palette(palette)
+                elif source_type == 'image' and self.current_palettes:
+                    self.display_multiple_palettes(self.current_palettes)
+            
+            # Update state
+            self.current_file = path
+            self.is_modified = False
+            self.update_title()
+            
+            # Add to recent files
+            self.add_recent_file(path)
+            messagebox.showinfo('Loaded', f'Workspace loaded from {path}')
+            self.log_action(f"Loaded workspace: {path}")
+        except Exception as e:
+            messagebox.showerror('Load Error', f'Failed to load: {str(e)}')
+            self.log_action(f"Load failed: {str(e)}")
+    
+    def _get_encryption_key(self):
+        """Generate a consistent encryption key based on a fixed passphrase."""
+        passphrase = "ColorPaletteGenerator2025SecretKey"
+        key = hashlib.sha256(passphrase.encode()).digest()
+        # Fernet requires base64-encoded 32-byte key
+        import base64
+        return base64.urlsafe_b64encode(key)
+    
+    def _encrypt_aes(self, data):
+        """Encrypt data using AES (Fernet)."""
+        key = self._get_encryption_key()
+        f = Fernet(key)
+        return f.encrypt(data.encode('utf-8'))
+    
+    def _decrypt_aes(self, encrypted_data):
+        """Decrypt data using AES (Fernet)."""
+        key = self._get_encryption_key()
+        f = Fernet(key)
+        return f.decrypt(encrypted_data).decode('utf-8')
+    
+    def setup_logging(self):
+        """Setup logging to file in Temp directory."""
+        temp_dir = os.path.join(os.path.dirname(__file__), 'Temp')
+        os.makedirs(temp_dir, exist_ok=True)
+        log_file = os.path.join(temp_dir, 'app.log')
+        
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.FileHandler(log_file, encoding='utf-8'),
+                logging.StreamHandler()
+            ]
+        )
+        self.logger = logging.getLogger(__name__)
+    
+    def log_action(self, action):
+        """Log an action to the log file."""
+        try:
+            self.logger.info(action)
+        except Exception:
+            pass
+    
+    def on_closing(self):
+        """Handle window close event - ask to save if modified."""
+        if self.is_modified:
+            response = messagebox.askyesnocancel(
+                '저장', 
+                '현재 작업이 수정되었습니다. 저장하시겠습니까?'
+            )
+            if response is None:  # Cancel
+                return
+            elif response:  # Yes
+                saved = self.save_pgf()
+                if not saved:
+                    return
+        
+        self.log_action("Application closed")
+        self.destroy()
+    
+    def get_temp_dir(self):
+        """Get or create Temp directory for app data."""
+        temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'Temp')
+        try:
+            os.makedirs(temp_dir, exist_ok=True)
+        except Exception:
+            pass
+        return temp_dir
+    
+    def get_recent_files_path(self):
+        """Get path to recent files list."""
+        return os.path.join(self.get_temp_dir(), 'recent.dat')
+    
+    def load_recent_files(self):
+        """Load recent files list from encrypted file."""
+        try:
+            import json
+            
+            path = self.get_recent_files_path()
+            if not os.path.exists(path):
+                return []
+            
+            with open(path, 'rb') as f:
+                encrypted = f.read()
+            
+            data = self._decrypt_aes(encrypted)
+            recent_files = json.loads(data)
+            
+            # Filter out non-existent files
+            return [f for f in recent_files if os.path.exists(f)]
+        except Exception:
+            return []
+    
+    def save_recent_files(self, recent_files):
+        """Save recent files list to encrypted file."""
+        try:
+            import json
+            
+            data = json.dumps(recent_files)
+            encrypted = self._encrypt_aes(data)
+            
+            path = self.get_recent_files_path()
+            with open(path, 'wb') as f:
+                f.write(encrypted)
+        except Exception:
+            pass
+    
+    def add_recent_file(self, filepath):
+        """Add file to recent files list (max 10)."""
+        recent_files = self.load_recent_files()
+        
+        # Remove if already exists
+        if filepath in recent_files:
+            recent_files.remove(filepath)
+        
+        # Add to front
+        recent_files.insert(0, filepath)
+        
+        # Keep only last 10
+        recent_files = recent_files[:10]
+        
+        self.save_recent_files(recent_files)
+        self.update_recent_menu()
+    
+    def update_recent_menu(self):
+        """Update the Open Recent submenu."""
+        try:
+            self.recent_menu.delete(0, tk.END)
+            
+            recent_files = self.load_recent_files()
+            
+            if not recent_files:
+                self.recent_menu.add_command(label='(No recent files)', state='disabled')
+            else:
+                for filepath in recent_files:
+                    filename = os.path.basename(filepath)
+                    self.recent_menu.add_command(
+                        label=filename,
+                        command=lambda p=filepath: self.load_recent_file(p)
+                    )
+        except Exception:
+            pass
+    
+    def load_recent_file(self, filepath):
+        """Load a file from recent files list."""
+        if not os.path.exists(filepath):
+            messagebox.showerror('Error', f'File not found: {filepath}')
+            return
+        
+        try:
+            import json
+            import base64
+            
+            with open(filepath, 'r', encoding='utf-8') as f:
+                encoded = f.read()
+            
+            data_json = base64.b64decode(encoded.encode('utf-8')).decode('utf-8')
+            workspace_data = json.loads(data_json)
+            
+            # Restore workspace state
+            self.saved_palettes = workspace_data.get('saved_palettes', [])
+            self.selected_schemes = workspace_data.get('selected_schemes', ['complementary', 'analogous', 'triadic', 'monochromatic'])
+            self.source_type.set(workspace_data.get('source_type', 'hex'))
+            self.hex_entry.set(workspace_data.get('hex_entry', '#3498db'))
+            self.current_palettes = workspace_data.get('current_palettes', [])
+            self._saved_counter = workspace_data.get('saved_counter', 0)
+            self._saved_selected = workspace_data.get('saved_selected', None)
+            
+            # Update UI
+            self._update_color_swatch(self.hex_entry.get())
+            self.on_source_change()
+            self.render_saved_list()
+            if self.current_palettes:
+                self.clear_palette_display()
+                source_type = self.source_type.get()
+                if source_type == 'hex' and self.current_palettes:
+                    palette = self.current_palettes[0]
+                    self.display_single_palette(palette)
+                elif source_type == 'image' and self.current_palettes:
+                    self.display_multiple_palettes(self.current_palettes)
+            
+            # Update state
+            self.current_file = filepath
+            self.is_modified = False
+            self.update_title()
+            
+            self.add_recent_file(filepath)
+        except Exception as e:
+            messagebox.showerror('Load Error', f'Failed to load: {str(e)}')
 
     def save_palettes_to_single_txt(self, path):
         """Save all current palettes into a single text file at `path`."""
@@ -1228,25 +1633,71 @@ class PaletteApp(tk.Tk):
         for child in self.palette_inner.winfo_children():
             child.destroy()
 
-    def draw_color_box(self, parent, hex_color, label_text):
-        frm = ttk.Frame(parent)
-        frm.pack(fill='x', pady=0, padx=0)  # Remove all padding
+    def draw_color_box(self, parent, hex_color, label_text, clickable=True):
+        # Use regular Frame instead of ttk.Frame so we can set background color
+        frm = tk.Frame(parent, bg='white')
+        frm.pack(fill='x', pady=0, padx=0)
 
-        canvas = tk.Canvas(frm, width=120, height=50, bd=0, relief='solid', highlightthickness=0, cursor='hand2')
-        canvas.pack(side='left', padx=0, pady=0)  # Remove padding
+        # Extended canvas width to reach near scrollbar
+        canvas = tk.Canvas(frm, width=220, height=50, bd=0, relief='solid', highlightthickness=0, cursor='hand2', bg='white')
+        canvas.pack(side='left', padx=0, pady=0)
+        
+        # Draw initial color
         try:
-            canvas.create_rectangle(0, 0, 120, 50, fill=hex_color, outline='', width=0)
+            rect_id = canvas.create_rectangle(0, 0, 220, 50, fill=hex_color, outline='', width=0)
         except tk.TclError:
-            canvas.create_rectangle(0, 0, 120, 50, fill="#ffffff", outline='', width=0)
+            rect_id = canvas.create_rectangle(0, 0, 220, 50, fill="#ffffff", outline='', width=0)
+        
+        # Hover effect: change entire frame background to light blue
+        def on_enter(e):
+            try:
+                frm.config(bg='#ADD8E6')  # light blue
+                canvas.config(bg='#ADD8E6')
+                lbl.config(background='#ADD8E6')
+            except Exception:
+                pass
+        
+        def on_leave(e):
+            try:
+                frm.config(bg='white')
+                canvas.config(bg='white')
+                lbl.config(background='white')
+            except Exception:
+                pass
+        
+        frm.bind('<Enter>', on_enter)
+        frm.bind('<Leave>', on_leave)
+        canvas.bind('<Enter>', on_enter)
+        canvas.bind('<Leave>', on_leave)
 
         # clicking a color swatch should try to add the color to the selected saved palette
-        try:
-            canvas.bind('<Button-1>', lambda e, hx=hex_color: self.on_palette_color_click(hx))
-        except Exception:
-            pass
+        if clickable:
+            try:
+                canvas.bind('<Button-1>', lambda e, hx=hex_color: self.on_palette_color_click(hx))
+            except Exception:
+                pass
 
-        lbl = ttk.Label(frm, text=f"{label_text}\n{hex_color}")
+        # Use regular Label instead of ttk.Label for background control
+        lbl = tk.Label(frm, text=f"{label_text}\n{hex_color}", bg='white', cursor='hand2')
         lbl.pack(side='left', padx=10)
+        lbl.bind('<Enter>', on_enter)
+        lbl.bind('<Leave>', on_leave)
+        
+        # Make label clickable too
+        if clickable:
+            try:
+                lbl.bind('<Button-1>', lambda e, hx=hex_color: self.on_palette_color_click(hx))
+            except Exception:
+                pass
+        
+        # Bind scroll handler to new widgets
+        if hasattr(self, '_palette_scroll_handler'):
+            try:
+                frm.bind('<MouseWheel>', self._palette_scroll_handler, add='+')
+                canvas.bind('<MouseWheel>', self._palette_scroll_handler, add='+')
+                lbl.bind('<MouseWheel>', self._palette_scroll_handler, add='+')
+            except Exception:
+                pass
 
     # --- Saved palettes management ---
     def add_saved_palette(self):
@@ -1261,6 +1712,8 @@ class PaletteApp(tk.Tk):
         self.saved_palettes.append(entry)
         # do not auto-select or preview; just re-render to show the new empty palette
         self.render_saved_list()
+        self.mark_modified()
+        self.log_action(f"Added new palette: {name}")
 
     def remove_saved_palette(self):
         # 항상 최소 1개 팔레트 이상 유지
@@ -1270,6 +1723,7 @@ class PaletteApp(tk.Tk):
         if self._saved_selected is None:
             return
         idx = self._saved_selected
+        palette_name = self.saved_palettes[idx]['name'] if idx < len(self.saved_palettes) else 'Unknown'
         try:
             del self.saved_palettes[idx]
         except Exception:
@@ -1280,6 +1734,8 @@ class PaletteApp(tk.Tk):
         else:
             self._saved_selected = max(0, idx - 1)
         self.render_saved_list()
+        self.log_action(f"Removed palette: {palette_name}")
+        self.mark_modified()
 
     def on_saved_select(self):
         # kept for backward compatibility; selection is handled by render callbacks
@@ -1318,6 +1774,8 @@ class PaletteApp(tk.Tk):
             entry['colors'].append(hx)
             # re-render saved list to update the visual bar
             self.render_saved_list()
+            self.mark_modified()
+            self.log_action(f"Added color {hx} to palette: {entry['name']}")
         except Exception:
             pass
 
@@ -1355,13 +1813,60 @@ class PaletteApp(tk.Tk):
             ef.bind('<Button-3>', make_context_menu(idx))
             lbl.bind('<Button-3>', make_context_menu(idx))
 
-            # color bar: create N equally sized frames
-            bar = tk.Frame(ef)
-            bar.pack(fill='x', pady=(4,0), padx=0)
-            colors = entry.get('colors', []) or ['#000000']
-            for c in colors:
-                f = tk.Frame(bar, bg=c, height=28)
-                f.pack(side='left', fill='both', expand=True)
+            # color bar: create N equally sized frames or checkerboard if empty
+            bar_container = tk.Frame(ef)
+            bar_container.pack(fill='x', pady=(4,0), padx=0)
+            colors = entry.get('colors', [])
+            view_mode = entry.get('view_mode', 'rgb')
+            
+            if not colors:
+                # Draw checkerboard pattern for empty palette
+                bar_canvas = tk.Canvas(bar_container, height=28, highlightthickness=0)
+                bar_canvas.pack(fill='x')
+                
+                def make_checkerboard_drawer(canvas):
+                    def draw():
+                        canvas.delete('all')
+                        width = canvas.winfo_width()
+                        if width < 10:
+                            width = 200
+                        square_size = 8
+                        for y in range(0, 28, square_size):
+                            for x in range(0, width, square_size):
+                                if (x // square_size + y // square_size) % 2 == 0:
+                                    canvas.create_rectangle(x, y, x+square_size, y+square_size, fill='#cccccc', outline='')
+                                else:
+                                    canvas.create_rectangle(x, y, x+square_size, y+square_size, fill='#ffffff', outline='')
+                    return draw
+                
+                drawer = make_checkerboard_drawer(bar_canvas)
+                bar_canvas.bind('<Configure>', lambda e, d=drawer: d())
+                bar_canvas.after(10, drawer)
+            else:
+                bar = tk.Frame(bar_container)
+                bar.pack(fill='x')
+                display_colors = colors
+                if view_mode == 'value':
+                    # Convert to grayscale using luminance
+                    display_colors = []
+                    for c in colors:
+                        lum = self.get_luminance(c)
+                        gray_val = int(lum * 255)
+                        display_colors.append(f'#{gray_val:02x}{gray_val:02x}{gray_val:02x}')
+                for c in display_colors:
+                    f = tk.Frame(bar, bg=c, height=28)
+                    f.pack(side='left', fill='both', expand=True)
+        
+        # Rebind scroll events to new widgets
+        if hasattr(self, '_saved_scroll_handler'):
+            def bind_scroll_recursive(widget):
+                try:
+                    widget.bind('<MouseWheel>', self._saved_scroll_handler, add='+')
+                    for child in widget.winfo_children():
+                        bind_scroll_recursive(child)
+                except Exception:
+                    pass
+            bind_scroll_recursive(self.saved_list_container)
 
     def _select_saved_entry(self, idx):
         self._saved_selected = idx
@@ -1373,12 +1878,19 @@ class PaletteApp(tk.Tk):
         self._saved_selected = idx
         self.render_saved_list()
         
+        entry = self.saved_palettes[idx]
+        current_mode = entry.get('view_mode', 'rgb')
+        view_label = 'RGB로 보기' if current_mode == 'value' else '밸류로 보기'
+        
         menu = tk.Menu(self, tearoff=0)
         menu.add_command(label='이름 바꾸기', command=lambda: self.rename_palette(idx))
         menu.add_command(label='팔레트 편집', command=lambda: self.open_palette_editor(idx))
         menu.add_command(label='팔레트 저장', command=lambda: self.save_palette_file(idx))
         menu.add_separator()
-        menu.add_command(label='밸류로 보기', command=lambda: self.toggle_palette_view(idx))
+        menu.add_command(label='TXT로 내보내기', command=lambda: self.export_palette_txt(idx))
+        menu.add_command(label='PNG로 내보내기', command=lambda: self.export_palette_png(idx))
+        menu.add_separator()
+        menu.add_command(label=view_label, command=lambda: self.toggle_palette_view(idx))
         
         try:
             menu.post(event.x_root, event.y_root)
@@ -1394,12 +1906,12 @@ class PaletteApp(tk.Tk):
             # Create a simple dialog for renaming
             dialog = tk.Toplevel(self)
             dialog.title('이름 바꾸기')
-            dialog.geometry('300x100')
+            dialog.geometry('300x130')
             dialog.resizable(False, False)
             dialog.transient(self)
             dialog.grab_set()
             
-            ttk.Label(dialog, text='새 이름:').pack(pady=10)
+            ttk.Label(dialog, text='새 이름:').pack(pady=(10,5))
             entry_name = ttk.Entry(dialog)
             entry_name.pack(padx=10, pady=5, fill='x')
             entry_name.insert(0, old_name)
@@ -1411,10 +1923,13 @@ class PaletteApp(tk.Tk):
                 if new_name:
                     self.saved_palettes[idx]['name'] = new_name
                     self.render_saved_list()
+                    self.mark_modified()
                 dialog.destroy()
             
-            ttk.Button(dialog, text='확인', command=save_name).pack(side='left', padx=5, pady=10)
-            ttk.Button(dialog, text='취소', command=dialog.destroy).pack(side='left', padx=5, pady=10)
+            btn_frame = ttk.Frame(dialog)
+            btn_frame.pack(pady=10)
+            ttk.Button(btn_frame, text='확인', command=save_name).pack(side='left', padx=5)
+            ttk.Button(btn_frame, text='취소', command=dialog.destroy).pack(side='left', padx=5)
         except Exception as e:
             messagebox.showerror('오류', str(e))
 
@@ -1424,31 +1939,47 @@ class PaletteApp(tk.Tk):
             entry = self.saved_palettes[idx]
             editor_dialog = tk.Toplevel(self)
             editor_dialog.title(f'팔레트 편집 - {entry["name"]}')
-            editor_dialog.geometry('500x300')
+            editor_dialog.geometry('600x150')
             editor_dialog.resizable(True, True)
             editor_dialog.transient(self)
             editor_dialog.grab_set()
             
-            # Store working copy of colors
-            working_colors = entry['colors'].copy() if entry['colors'] else ['#000000']
+            # Store working copy of colors (empty list if no colors)
+            working_colors = entry['colors'].copy() if entry['colors'] else []
             selected_color_idx = [None]  # use list to make it mutable in nested functions
+            hover_color_idx = [None]  # track hover state
             
-            # Top: color bar display
-            bar_frame = ttk.Frame(editor_dialog)
-            bar_frame.pack(fill='both', expand=True, padx=10, pady=10)
+            # Top: color bar display (with padding)
+            bar_container = tk.Frame(editor_dialog, bg='#f0f0f0')
+            bar_container.pack(fill='x', expand=False, padx=10, pady=(10,5))
+            self.palette_editor_bar = tk.Canvas(bar_container, bg='white', height=50, highlightthickness=0)
+            self.palette_editor_bar.pack(fill='x', expand=False)
             
-            self.palette_editor_bar = tk.Canvas(bar_frame, bg='white', height=50, highlightthickness=1)
-            self.palette_editor_bar.pack(fill='both', expand=True)
+            def draw_checkerboard(canvas, width, height, square_size=10):
+                """Draw a checkerboard pattern for empty palette."""
+                for y in range(0, height, square_size):
+                    for x in range(0, width, square_size):
+                        if (x // square_size + y // square_size) % 2 == 0:
+                            canvas.create_rectangle(x, y, x+square_size, y+square_size, fill='#cccccc', outline='')
+                        else:
+                            canvas.create_rectangle(x, y, x+square_size, y+square_size, fill='#ffffff', outline='')
             
             def draw_colors():
                 self.palette_editor_bar.delete('all')
+                canvas_width = self.palette_editor_bar.winfo_width()
+                if canvas_width < 100:
+                    canvas_width = 600
+                
                 if not working_colors:
-                    self.palette_editor_bar.create_rectangle(0, 0, 500, 50, fill='#000000')
+                    # Draw checkerboard pattern for empty palette
+                    draw_checkerboard(self.palette_editor_bar, canvas_width, 50)
                     return
                 
-                box_width = self.palette_editor_bar.winfo_width() / len(working_colors)
-                if box_width < 1:
-                    box_width = 50
+                canvas_width = self.palette_editor_bar.winfo_width()
+                if canvas_width < 100:
+                    canvas_width = 600
+                
+                box_width = canvas_width / len(working_colors)
                 
                 for i, color in enumerate(working_colors):
                     x0 = i * box_width
@@ -1457,61 +1988,150 @@ class PaletteApp(tk.Tk):
                     # Draw color box
                     self.palette_editor_bar.create_rectangle(x0, 0, x1, 50, fill=color, outline='')
                     
-                    # Draw selection border if selected
+                    # Draw hover border (darker/lighter based on luminance)
+                    if hover_color_idx[0] == i:
+                        lum = self.get_luminance(color)
+                        hover_border = '#000000' if lum > 128 else '#ffffff'
+                        self.palette_editor_bar.create_rectangle(x0+1, 1, x1-1, 49, outline=hover_border, width=1)
+                    
+                    # Draw selection border (complementary color)
                     if selected_color_idx[0] == i:
                         lum = self.get_luminance(color)
-                        border_color = '#000000' if lum > 128 else '#ffffff'
-                        self.palette_editor_bar.create_rectangle(x0, 0, x1, 50, outline=border_color, width=3)
-                    
-                    # Bind click event
-                    def make_click(color_i):
-                        def on_click(e):
-                            selected_color_idx[0] = color_i
-                            draw_colors()
-                        return on_click
-                    self.palette_editor_bar.tag_bind(f'color_{i}', '<Button-1>', make_click(i))
+                        # Get complementary border color
+                        rgb = self.generator.hex_to_rgb(color)
+                        comp_rgb = tuple(255 - c for c in rgb)
+                        comp_color = self.generator.rgb_to_hex(comp_rgb)
+                        self.palette_editor_bar.create_rectangle(x0+1, 1, x1-1, 49, outline=comp_color, width=2)
             
-            # Bind to draw on resize
+            # Drag-and-drop state
+            drag_state = {'dragging': False, 'start_idx': None, 'current_idx': None}
+            
+            # Bind canvas events
+            def on_canvas_press(e):
+                if not working_colors:
+                    return
+                canvas_width = self.palette_editor_bar.winfo_width()
+                box_width = canvas_width / len(working_colors)
+                clicked_idx = int(e.x / box_width)
+                clicked_idx = max(0, min(clicked_idx, len(working_colors) - 1))
+                
+                # Start drag operation
+                drag_state['dragging'] = True
+                drag_state['start_idx'] = clicked_idx
+                drag_state['current_idx'] = clicked_idx
+                
+                selected_color_idx[0] = clicked_idx
+                draw_colors()
+                update_button_states()
+            
+            def on_canvas_drag(e):
+                if not working_colors or not drag_state['dragging']:
+                    # Just update hover if not dragging
+                    if working_colors and not drag_state['dragging']:
+                        canvas_width = self.palette_editor_bar.winfo_width()
+                        box_width = canvas_width / len(working_colors)
+                        hovered_idx = int(e.x / box_width)
+                        hovered_idx = max(0, min(hovered_idx, len(working_colors) - 1))
+                        if hover_color_idx[0] != hovered_idx:
+                            hover_color_idx[0] = hovered_idx
+                            draw_colors()
+                    return
+                
+                canvas_width = self.palette_editor_bar.winfo_width()
+                box_width = canvas_width / len(working_colors)
+                current_idx = int(e.x / box_width)
+                current_idx = max(0, min(current_idx, len(working_colors) - 1))
+                
+                if current_idx != drag_state['current_idx']:
+                    # Swap colors during drag
+                    start = drag_state['start_idx']
+                    current = drag_state['current_idx']
+                    
+                    # Move from current position to new position
+                    color = working_colors.pop(current)
+                    working_colors.insert(current_idx, color)
+                    
+                    drag_state['current_idx'] = current_idx
+                    selected_color_idx[0] = current_idx
+                    draw_colors()
+            
+            def on_canvas_release(e):
+                if drag_state['dragging']:
+                    drag_state['dragging'] = False
+                    drag_state['start_idx'] = None
+                    drag_state['current_idx'] = None
+                    draw_colors()
+            
+            def on_canvas_motion(e):
+                if not drag_state['dragging'] and working_colors:
+                    canvas_width = self.palette_editor_bar.winfo_width()
+                    box_width = canvas_width / len(working_colors)
+                    hovered_idx = int(e.x / box_width)
+                    hovered_idx = max(0, min(hovered_idx, len(working_colors) - 1))
+                    if hover_color_idx[0] != hovered_idx:
+                        hover_color_idx[0] = hovered_idx
+                        draw_colors()
+            
+            def on_canvas_leave(e):
+                if not drag_state['dragging'] and hover_color_idx[0] is not None:
+                    hover_color_idx[0] = None
+                    draw_colors()
+            
+            self.palette_editor_bar.bind('<Button-1>', on_canvas_press)
+            self.palette_editor_bar.bind('<B1-Motion>', on_canvas_drag)
+            self.palette_editor_bar.bind('<ButtonRelease-1>', on_canvas_release)
+            self.palette_editor_bar.bind('<Motion>', on_canvas_motion)
+            self.palette_editor_bar.bind('<Leave>', on_canvas_leave)
             self.palette_editor_bar.bind('<Configure>', lambda e: draw_colors())
             editor_dialog.after(100, draw_colors)
             
             # Bottom: buttons
-            btn_frame = ttk.Frame(editor_dialog)
-            btn_frame.pack(fill='x', padx=10, pady=10)
+            btn_frame = tk.Frame(editor_dialog)
+            btn_frame.pack(fill='x', padx=10, pady=(5,5))
             
             def add_color():
-                if selected_color_idx[0] is None:
-                    selected_color_idx[0] = 0
-                
                 color_result = colorchooser.askcolor(title='색상 추가')
                 if color_result[1]:
                     hex_color = color_result[1]
-                    working_colors.insert(selected_color_idx[0], hex_color)
+                    if selected_color_idx[0] is not None and working_colors:
+                        working_colors.insert(selected_color_idx[0], hex_color)
+                    else:
+                        working_colors.append(hex_color)
                     draw_colors()
+                    update_button_states()
             
             def delete_color():
-                if selected_color_idx[0] is not None:
+                if selected_color_idx[0] is not None and working_colors:
                     working_colors.pop(selected_color_idx[0])
-                    if working_colors:
-                        selected_color_idx[0] = max(0, selected_color_idx[0] - 1)
-                    else:
-                        selected_color_idx[0] = None
-                        working_colors.append('#000000')
+                    selected_color_idx[0] = max(0, selected_color_idx[0] - 1) if working_colors else None
                     draw_colors()
+                    update_button_states()
             
             def confirm():
                 entry['colors'] = working_colors.copy()
                 self.render_saved_list()
+                self.mark_modified()
                 editor_dialog.destroy()
             
+            def update_button_states():
+                # Enable/disable buttons based on selection
+                # Allow adding colors even if nothing is selected
+                add_btn.config(state='normal')
+                if selected_color_idx[0] is not None and working_colors:
+                    del_btn.config(state='normal')
+                else:
+                    del_btn.config(state='disabled')
+            
             # Left group: Add/Delete
-            left_btns = ttk.Frame(btn_frame)
+            left_btns = tk.Frame(btn_frame)
             left_btns.pack(side='left')
-            ttk.Button(left_btns, text='색상 추가', command=add_color).pack(side='left', padx=5)
-            ttk.Button(left_btns, text='색상 삭제', command=delete_color).pack(side='left', padx=5)
+            add_btn = ttk.Button(left_btns, text='색상 추가', command=add_color, state='normal')
+            add_btn.pack(side='left', padx=5)
+            del_btn = ttk.Button(left_btns, text='색상 삭제', command=delete_color, state='disabled')
+            del_btn.pack(side='left', padx=5)
             
             # Right group: Confirm/Cancel
-            right_btns = ttk.Frame(btn_frame)
+            right_btns = tk.Frame(btn_frame)
             right_btns.pack(side='right')
             ttk.Button(right_btns, text='확인', command=confirm).pack(side='left', padx=5)
             ttk.Button(right_btns, text='취소', command=editor_dialog.destroy).pack(side='left', padx=5)
@@ -1529,12 +2149,117 @@ class PaletteApp(tk.Tk):
             return 128
 
     def save_palette_file(self, idx):
-        """Save palette to file."""
-        messagebox.showinfo('저장', '팔레트 저장 기능은 준비 중입니다.')
+        """Save palette to .mps file."""
+        try:
+            entry = self.saved_palettes[idx]
+            filename = filedialog.asksaveasfilename(
+                defaultextension='.mps',
+                filetypes=[('My Palette', '*.mps'), ('All Files', '*.*')],
+                initialfile=entry['name']
+            )
+            if filename:
+                import json
+                import base64
+                data = json.dumps({'name': entry['name'], 'colors': entry['colors']})
+                encoded = base64.b64encode(data.encode('utf-8')).decode('utf-8')
+                with open(filename, 'w', encoding='utf-8') as f:
+                    f.write(encoded)
+        except Exception as e:
+            messagebox.showerror('오류', f'저장 실패: {str(e)}')
 
     def toggle_palette_view(self, idx):
         """Toggle between RGB and Value (luminance) view."""
-        messagebox.showinfo('밸류 보기', '밸류 보기 기능은 준비 중입니다.')
+        try:
+            entry = self.saved_palettes[idx]
+            # Toggle view mode (default is 'rgb')
+            current_mode = entry.get('view_mode', 'rgb')
+            entry['view_mode'] = 'value' if current_mode == 'rgb' else 'rgb'
+            self.render_saved_list()
+        except Exception as e:
+            messagebox.showerror('오류', str(e))
+
+    def export_palette_txt(self, idx):
+        """Export palette colors to TXT file."""
+        try:
+            entry = self.saved_palettes[idx]
+            colors = entry.get('colors', [])
+            if not colors:
+                messagebox.showinfo('내보내기', '팔레트에 색상이 없습니다.')
+                return
+            
+            filename = filedialog.asksaveasfilename(
+                defaultextension='.txt',
+                filetypes=[('Text File', '*.txt'), ('All Files', '*.*')],
+                initialfile=f"{entry['name']}.txt"
+            )
+            if filename:
+                with open(filename, 'w', encoding='utf-8') as f:
+                    f.write(f"팔레트: {entry['name']}\n")
+                    f.write(f"색상 개수: {len(colors)}\n\n")
+                    for i, color in enumerate(colors, 1):
+                        f.write(f"{i}. {color}\n")
+        except Exception as e:
+            messagebox.showerror('오류', f'TXT 내보내기 실패: {str(e)}')
+
+    def export_palette_png(self, idx):
+        """Export palette colors as PNG image."""
+        try:
+            entry = self.saved_palettes[idx]
+            colors = entry.get('colors', [])
+            if not colors:
+                messagebox.showinfo('내보내기', '팔레트에 색상이 없습니다.')
+                return
+            
+            filename = filedialog.asksaveasfilename(
+                defaultextension='.png',
+                filetypes=[('PNG Image', '*.png'), ('All Files', '*.*')],
+                initialfile=f"{entry['name']}.png"
+            )
+            if filename:
+                # Create image with colors side by side
+                color_width = 100
+                img_width = color_width * len(colors)
+                img_height = 100
+                
+                img = Image.new('RGB', (img_width, img_height))
+                draw = ImageDraw.Draw(img)
+                
+                try:
+                    from PIL import ImageFont
+                    font = ImageFont.load_default()
+                except Exception:
+                    font = None
+                
+                for i, color in enumerate(colors):
+                    x0 = i * color_width
+                    x1 = x0 + color_width
+                    draw.rectangle([x0, 0, x1, img_height], fill=color)
+                    
+                    # Draw color hex code on top
+                    try:
+                        rgb = self.generator.hex_to_rgb(color)
+                        lum = int(0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2])
+                        text_color = (0, 0, 0) if lum > 128 else (255, 255, 255)
+                        
+                        # Draw text at center
+                        text = color.upper()
+                        try:
+                            bbox = draw.textbbox((0, 0), text, font=font)
+                            text_width = bbox[2] - bbox[0]
+                            text_height = bbox[3] - bbox[1]
+                        except Exception:
+                            text_width = len(text) * 6
+                            text_height = 10
+                        
+                        text_x = x0 + (color_width - text_width) // 2
+                        text_y = (img_height - text_height) // 2
+                        draw.text((text_x, text_y), text, fill=text_color, font=font)
+                    except Exception:
+                        pass
+                
+                img.save(filename)
+        except Exception as e:
+            messagebox.showerror('오류', f'PNG 내보내기 실패: {str(e)}')
 
     def show_extracted_swatches(self, colors):
         """색상 목록(리스트 of RGB tuples)을 상단의 색상 탭 프레임에 표시합니다."""
@@ -1579,6 +2304,7 @@ class PaletteApp(tk.Tk):
                 palette = self.generator.generate_palette(hex_code, source_type='hex')
                 # store current palettes for saving
                 self.current_palettes = [palette]
+                self.log_action(f"Generated palette from HEX: {hex_code}")
             else:
                 if not self.image_path:
                     raise ValueError("이미지 파일을 선택하세요.")
@@ -1591,8 +2317,10 @@ class PaletteApp(tk.Tk):
                 palettes = [self.generator.generate_palette(c, source_type='rgb') for c in main_colors]
                 # store current palettes for saving
                 self.current_palettes = palettes
+                self.log_action(f"Generated palette from image: {os.path.basename(self.image_path)}")
         except Exception as e:
             messagebox.showerror("Error", str(e))
+            self.log_action(f"Generate error: {str(e)}")
             return
 
         self.clear_palette_display()
@@ -1602,9 +2330,12 @@ class PaletteApp(tk.Tk):
         # If HEX mode, show single palette; if image mode, show palettes for each representative color
         if source_type == 'hex':
             palette = palette
-            base_hex = self.generator.rgb_to_hex(palette['base'])
+            base = palette['base']
+            if isinstance(base, list):
+                base = tuple(base)
+            base_hex = self.generator.rgb_to_hex(base)
             ttk.Label(self.palette_inner, text="기본 색상", font=('Segoe UI', 10, 'bold')).pack(anchor='w')
-            self.draw_color_box(self.palette_inner, base_hex, f"RGB: {palette['base']}")
+            self.draw_color_box(self.palette_inner, base_hex, f"RGB: {base}")
 
             # Display only selected harmony schemes
             scheme_labels = {
@@ -1631,17 +2362,27 @@ class PaletteApp(tk.Tk):
                     # Single color (e.g., complementary)
                     hx = self.generator.rgb_to_hex(colors)
                     self.draw_color_box(self.palette_inner, hx, f"RGB: {colors}")
+                elif isinstance(colors, list) and len(colors) == 3 and all(isinstance(c, int) for c in colors):
+                    # Single color as list
+                    colors = tuple(colors)
+                    hx = self.generator.rgb_to_hex(colors)
+                    self.draw_color_box(self.palette_inner, hx, f"RGB: {colors}")
                 else:
                     # List of colors
                     for idx, col in enumerate(colors, 1):
+                        if isinstance(col, list):
+                            col = tuple(col)
                         hx = self.generator.rgb_to_hex(col)
                         self.draw_color_box(self.palette_inner, hx, f"{idx}. RGB: {col}")
         else:
             # palettes is a list of palette dicts for the 5 main colors
             for i, p in enumerate(palettes, start=1):
                 ttk.Label(self.palette_inner, text=f"대표 색상 {i}", font=('Segoe UI', 10, 'bold')).pack(anchor='w', pady=(6,0), padx=0)
-                base_hex = self.generator.rgb_to_hex(p['base'])
-                self.draw_color_box(self.palette_inner, base_hex, f"Base RGB: {p['base']}")
+                base = p['base']
+                if isinstance(base, list):
+                    base = tuple(base)
+                base_hex = self.generator.rgb_to_hex(base)
+                self.draw_color_box(self.palette_inner, base_hex, f"Base RGB: {base}")
 
                 # Display only selected harmony schemes
                 scheme_labels = {
@@ -1664,15 +2405,101 @@ class PaletteApp(tk.Tk):
                     ttk.Label(self.palette_inner, text=f"  {label}", font=('Segoe UI', 9, 'bold')).pack(anchor='w', padx=0)
                     
                     # Handle single color vs list
-                    if isinstance(colors, tuple) and len(colors) == 3 and all(isinstance(c, int) for c in colors):
+                    if isinstance(colors, (tuple, list)) and len(colors) == 3 and all(isinstance(c, int) for c in colors):
                         # Single color
+                        if isinstance(colors, list):
+                            colors = tuple(colors)
                         hx = self.generator.rgb_to_hex(colors)
-                        self.draw_color_box(self.palette_inner, hx, f"RGB: {colors}")
+                        self.draw_color_box(self.palette_inner, hx, f"RGB: {colors}", clickable=True)
                     else:
                         # List of colors
                         for idx, col in enumerate(colors, 1):
+                            if isinstance(col, list):
+                                col = tuple(col)
                             hx = self.generator.rgb_to_hex(col)
-                            self.draw_color_box(self.palette_inner, hx, f"{idx}. RGB: {col}")
+                            self.draw_color_box(self.palette_inner, hx, f"{idx}. RGB: {col}", clickable=True)
+
+    def display_single_palette(self, palette):
+        """Display a single palette (for HEX mode)."""
+        base = palette['base']
+        if isinstance(base, list):
+            base = tuple(base)
+        base_hex = self.generator.rgb_to_hex(base)
+        ttk.Label(self.palette_inner, text="기본 색상", font=('Segoe UI', 10, 'bold')).pack(anchor='w')
+        self.draw_color_box(self.palette_inner, base_hex, f"RGB: {base}")
+
+        scheme_labels = {
+            'complementary': '보색',
+            'analogous': '유사색',
+            'triadic': '삼각 조화색',
+            'monochromatic': '단색 조화',
+            'split_complementary': '스플릿 보색',
+            'square': '스퀘어',
+            'tetradic': '테트라딕',
+            'double_complementary': '더블 보색'
+        }
+
+        for scheme in self.selected_schemes:
+            if scheme not in palette:
+                continue
+            colors = palette[scheme]
+            label = scheme_labels.get(scheme, scheme)
+            
+            ttk.Label(self.palette_inner, text=label, font=('Segoe UI', 10, 'bold')).pack(anchor='w', pady=(8,0), padx=0)
+            
+            # Handle single color (complementary)
+            if isinstance(colors, (tuple, list)) and len(colors) == 3 and all(isinstance(c, int) for c in colors):
+                if isinstance(colors, list):
+                    colors = tuple(colors)
+                hx = self.generator.rgb_to_hex(colors)
+                self.draw_color_box(self.palette_inner, hx, f"RGB: {colors}")
+            else:
+                # Handle list of colors
+                for idx, col in enumerate(colors, 1):
+                    if isinstance(col, list):
+                        col = tuple(col)
+                    hx = self.generator.rgb_to_hex(col)
+                    self.draw_color_box(self.palette_inner, hx, f"{idx}. RGB: {col}")
+    def display_multiple_palettes(self, palettes):
+        """Display multiple palettes (for image mode)."""
+        for i, p in enumerate(palettes, start=1):
+            ttk.Label(self.palette_inner, text=f"대표 색상 {i}", font=('Segoe UI', 10, 'bold')).pack(anchor='w', pady=(6,0), padx=0)
+            base = p['base']
+            if isinstance(base, list):
+                base = tuple(base)
+            base_hex = self.generator.rgb_to_hex(base)
+            self.draw_color_box(self.palette_inner, base_hex, f"Base RGB: {base}")
+
+            scheme_labels = {
+                'complementary': '보색',
+                'analogous': '유사색',
+                'triadic': '삼각 조화색',
+                'monochromatic': '단색 조화',
+                'split_complementary': '스플릿 보색',
+                'square': '스퀘어',
+                'tetradic': '테트라딕',
+                'double_complementary': '더블 보색'
+            }
+
+            for scheme in self.selected_schemes:
+                if scheme not in p:
+                    continue
+                colors = p[scheme]
+                label = scheme_labels.get(scheme, scheme)
+                
+                ttk.Label(self.palette_inner, text=f"  {label}", font=('Segoe UI', 9, 'bold')).pack(anchor='w', padx=0)
+                
+                if isinstance(colors, (tuple, list)) and len(colors) == 3 and all(isinstance(c, int) for c in colors):
+                    if isinstance(colors, list):
+                        colors = tuple(colors)
+                    hx = self.generator.rgb_to_hex(colors)
+                    self.draw_color_box(self.palette_inner, hx, f"RGB: {colors}", clickable=True)
+                else:
+                    for idx, col in enumerate(colors, 1):
+                        if isinstance(col, list):
+                            col = tuple(col)
+                        hx = self.generator.rgb_to_hex(col)
+                        self.draw_color_box(self.palette_inner, hx, f"{idx}. RGB: {col}", clickable=True)
 
     def create_tooltip(self, widget, text):
         """Create a tooltip for a widget."""
@@ -1706,13 +2533,27 @@ class PaletteApp(tk.Tk):
             self.saved_palettes.append(new_entry)
             self._saved_selected = len(self.saved_palettes) - 1
             self.render_saved_list()
-            messagebox.showinfo('완료', '팔레트가 복사되었습니다.')
         except Exception as e:
             messagebox.showerror('오류', str(e))
 
     def load_palette(self):
-        """Load palette from file."""
-        messagebox.showinfo('불러오기', '팔레트 불러오기 기능은 준비 중입니다.')
+        """Load palette from .mps file."""
+        try:
+            filename = filedialog.askopenfilename(
+                filetypes=[('My Palette', '*.mps'), ('All Files', '*.*')]
+            )
+            if filename:
+                import json
+                import base64
+                with open(filename, 'r', encoding='utf-8') as f:
+                    encoded = f.read()
+                data = json.loads(base64.b64decode(encoded.encode('utf-8')).decode('utf-8'))
+                new_entry = {'name': data['name'], 'colors': data['colors']}
+                self.saved_palettes.append(new_entry)
+                self._saved_selected = len(self.saved_palettes) - 1
+                self.render_saved_list()
+        except Exception as e:
+            messagebox.showerror('오류', f'불러오기 실패: {str(e)}')
 
 if __name__ == "__main__":
     app = PaletteApp()
