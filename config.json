@@ -1,0 +1,16 @@
+{
+  "auto_save_enabled": true,
+  "auto_save_interval": 300,
+  "kmeans_max_colors": 5,
+  "kmeans_filter_background": true,
+  "kmeans_max_iterations": 12,
+  "window_width": 700,
+  "window_height": 520,
+  "theme": "default",
+  "background_luminance_high": 240,
+  "background_luminance_low": 15,
+  "saturation_threshold": 0.15,
+  "max_recent_files": 10,
+  "default_export_format": "png",
+  "screen_picker_size": 100
+}
