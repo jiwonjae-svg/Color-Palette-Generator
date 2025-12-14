@@ -75,15 +75,17 @@ class ImageRecolorer:
         
         # Apply palette colors to each brightness zone
         for i in range(num_colors):
-            # Create mask for current brightness zone
+            # Create mask for current brightness zone (darkest to brightest)
             if i == num_colors - 1:
                 # Last zone includes max value
                 mask = (gray >= thresholds[i]) & (gray <= thresholds[i + 1])
             else:
                 mask = (gray >= thresholds[i]) & (gray < thresholds[i + 1])
             
-            # Get corresponding palette color (brightest to darkest)
-            palette_rgb = self.hex_to_rgb(sorted_palette[i])
+            # Map zones to colors: darkest zone (i=0) gets darkest color
+            # sorted_palette is brightest to darkest, so reverse index
+            color_idx = num_colors - 1 - i  # Reverse mapping
+            palette_rgb = self.hex_to_rgb(sorted_palette[color_idx])
             
             # Apply color to masked region
             result[mask] = palette_rgb

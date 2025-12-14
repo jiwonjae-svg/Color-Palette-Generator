@@ -31,10 +31,10 @@ class ColorAdjusterDialog:
         
         # Preview frame
         preview_frame = ttk.LabelFrame(self.dialog, text="미리보기", padding=10)
-        preview_frame.pack(fill='x', padx=10, pady=10)
+        preview_frame.pack(fill='both', expand=True, padx=10, pady=10)
         
-        self.preview_canvas = tk.Canvas(preview_frame, height=60, bg='white')
-        self.preview_canvas.pack(fill='x')
+        self.preview_canvas = tk.Canvas(preview_frame, height=120, bg='white')
+        self.preview_canvas.pack(fill='both', expand=True, anchor='center')
         
         # Control frame
         control_frame = ttk.Frame(self.dialog, padding=10)

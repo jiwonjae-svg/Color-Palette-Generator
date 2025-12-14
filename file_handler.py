@@ -11,31 +11,18 @@ from cryptography.fernet import Fernet
 import hashlib
 from tkinter import messagebox
 
+# Embedded encryption key for saves folder (keep secure)
+EMBEDDED_SAVES_KEY = b'VkZURWYzbUtiSFJ0Z2oyWHFwQjRwbjlSVldyakFrOWJPTUhjbGlDZmJZdz0='
+
 
 class FileHandler:
     """파일 저장/로드 관리 클래스"""
     
     def __init__(self, saves_root='./saves'):
         self.saves_root = saves_root
-        self._fernet_key = self._get_or_create_key()
-        
-    def _get_or_create_key(self):
-        """AES 암호화 키 생성 또는 로드"""
-        key_file = os.path.join(self.saves_root, '.key')
-        try:
-            os.makedirs(self.saves_root, exist_ok=True)
-            if os.path.exists(key_file):
-                with open(key_file, 'rb') as f:
-                    return f.read()
-            else:
-                key = Fernet.generate_key()
-                with open(key_file, 'wb') as f:
-                    f.write(key)
-                return key
-        except Exception as e:
-            logging.error(f"Key generation failed: {e}")
-            # Generate ephemeral key
-            return Fernet.generate_key()
+        os.makedirs(self.saves_root, exist_ok=True)
+        # Decode the base64 encoded key
+        self._fernet_key = base64.b64decode(EMBEDDED_SAVES_KEY)
     
     def _encrypt_aes(self, data_string):
         """AES 암호화"""

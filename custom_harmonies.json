@@ -1,0 +1,22 @@
+[
+  {
+    "name": "새 조합",
+    "rules": [
+      {
+        "type": "base"
+      },
+      {
+        "type": "hue_offset",
+        "value": 50.0
+      },
+      {
+        "type": "complementary",
+        "angle": 120.0
+      },
+      {
+        "type": "brightness",
+        "value": 5.0
+      }
+    ]
+  }
+]
