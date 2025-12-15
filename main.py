@@ -29,57 +29,44 @@ class PaletteApp(tk.Tk):
     def __init__(self):
         super().__init__()
         
-        # Initialize config manager and file handler
-        self.config_manager = ConfigManager()
         self.file_handler = FileHandler()
+        self.config_manager = ConfigManager(self.file_handler)
         
-        # Apply config to window
         window_width = self.config_manager.get('window_width', 700)
         window_height = self.config_manager.get('window_height', 520)
         self.geometry(f"{window_width}x{window_height}")
         self.resizable(False, False)
         
-        # Initialize generator
         self.generator = ColorPaletteGenerator()
         self.image_path = None
         self._temp_screenshot = None
         
-        # AI Recommender initialization
         self.ai_recommender = None
-        self.ai_palettes = []  # Store AI generated palettes
-        self.ai_palette_offset = 0  # For infinite scroll
+        self.ai_palettes = []
+        self.ai_palette_offset = 0
         
-        # Default selected harmony schemes
         self.selected_schemes = ['complementary', 'analogous', 'triadic', 'monochromatic']
         
-        # Track current file and modified state
         self.current_file = None
         self.is_modified = False
         
-        # Auto-save configuration from config
         self.auto_save_enabled = self.config_manager.get('auto_save_enabled', True)
-        self.auto_save_interval = self.config_manager.get('auto_save_interval', 300) * 1000  # Convert to ms
+        self.auto_save_interval = self.config_manager.get('auto_save_interval', 300) * 1000
         self.auto_save_timer = None
         
-        # Setup logging
         self.setup_logging()
         self.log_action("Application started")
         
-        # Setup window close protocol
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
-        # Setup keyboard shortcuts
         self.bind_shortcuts()
         
-        # Setup drag and drop
         self.setup_drag_drop()
 
         self.create_widgets()
         
-        # Update title after widgets are created
         self.update_title()
         
-        # Start auto-save timer
         if self.auto_save_enabled:
             self.start_auto_save()
     
@@ -106,26 +93,26 @@ class PaletteApp(tk.Tk):
         
         # Options menu
         optionsmenu = tk.Menu(menubar, tearoff=0)
-        optionsmenu.add_command(label='설정...', command=self.open_settings)
+        optionsmenu.add_command(label='Settings...', command=self.open_settings)
         optionsmenu.add_separator()
-        optionsmenu.add_command(label='기본 설정 복원', command=self.reset_settings)
+        optionsmenu.add_command(label='Reset to Defaults', command=self.reset_settings)
         menubar.add_cascade(label='Options', menu=optionsmenu)
         
         # Tools menu
         toolsmenu = tk.Menu(menubar, tearoff=0)
-        toolsmenu.add_command(label='이미지에 팔레트 적용...', command=self.apply_palette_to_image)
+        toolsmenu.add_command(label='Apply Palette to Image...', command=self.apply_palette_to_image)
         toolsmenu.add_separator()
-        toolsmenu.add_command(label='커스텀 색상 조합...', command=self.open_custom_harmony)
+        toolsmenu.add_command(label='Custom Color Harmonies...', command=self.open_custom_harmony)
         toolsmenu.add_separator()
-        toolsmenu.add_command(label='사전 정의 팔레트...', command=self.open_preset_palettes)
+        toolsmenu.add_command(label='Preset Palettes...', command=self.open_preset_palettes)
         menubar.add_cascade(label='Tools', menu=toolsmenu)
         
         self.config(menu=menubar)
 
         # Source type radio
         self.source_type = tk.StringVar(value='hex')
-        rb_hex = ttk.Radiobutton(frm_top, text='색상 선택', value='hex', variable=self.source_type, command=self.on_source_change)
-        rb_img = ttk.Radiobutton(frm_top, text='이미지 선택', value='image', variable=self.source_type, command=self.on_source_change)
+        rb_hex = ttk.Radiobutton(frm_top, text='Pick Color', value='hex', variable=self.source_type, command=self.on_source_change)
+        rb_img = ttk.Radiobutton(frm_top, text='From Image', value='image', variable=self.source_type, command=self.on_source_change)
         rb_ai = ttk.Radiobutton(frm_top, text='AI 추천', value='ai', variable=self.source_type, command=self.on_source_change)
         rb_hex.grid(row=0, column=0, sticky='w')
         rb_img.grid(row=0, column=1, sticky='w', padx=(8,0))
@@ -151,7 +138,7 @@ class PaletteApp(tk.Tk):
         # Now update the swatch and color info
         self._update_color_swatch("#3498db")
         
-        self.btn_color_picker = ttk.Button(frm_top, text="색상 선택...", command=self.open_color_picker)
+        self.btn_color_picker = ttk.Button(frm_top, text="Pick Color...", command=self.open_color_picker)
         self.btn_color_picker.grid(row=1, column=1, pady=(8,0), padx=(8,0), sticky='w')
 
         # Image select
@@ -163,17 +150,17 @@ class PaletteApp(tk.Tk):
         self.img_thumbnail_label = ttk.Label(frm_top)
         self.img_thumbnail_label.grid(row=1, column=4, padx=(8,0))
         # Screen picker button
-        btn_screen_pick = ttk.Button(frm_top, text="스크린에서 추출", command=self.start_screen_picker)
+        btn_screen_pick = ttk.Button(frm_top, text="Extract from Screen", command=self.start_screen_picker)
         btn_screen_pick.grid(row=1, column=5, padx=(8,0), pady=(8,0), sticky='w')
 
         # action buttons row (separate row to avoid collisions)
         btn_generate = ttk.Button(frm_top, text="Generate", command=self.generate)
         btn_generate.grid(row=3, column=0, pady=(12,0), sticky='w')
         # Random color button
-        btn_random = ttk.Button(frm_top, text="랜덤 색상", command=self.generate_random)
+        btn_random = ttk.Button(frm_top, text="Random Color", command=self.generate_random)
         btn_random.grid(row=3, column=1, padx=(8,0), pady=(12,0), sticky='w')
         # Color harmony options button
-        btn_harmony = ttk.Button(frm_top, text="색상 조합 옵션", command=self.open_harmony_selector)
+        btn_harmony = ttk.Button(frm_top, text="Harmony Options", command=self.open_harmony_selector)
         btn_harmony.grid(row=3, column=2, padx=(8,0), pady=(12,0), sticky='w')
         # AI Settings button (only visible in AI mode)
         self.btn_ai_settings = ttk.Button(frm_top, text="AI 요청 설정", command=self.open_ai_settings)
@@ -200,7 +187,7 @@ class PaletteApp(tk.Tk):
         self.frm_saved = ttk.Frame(content, padding=(6,6))
         self.frm_saved.pack(side='right', fill='y')
 
-        ttk.Label(self.frm_saved, text='저장된 팔레트', font=('Segoe UI', 10, 'bold')).pack(anchor='nw', side='top')
+        ttk.Label(self.frm_saved, text='Saved Palettes', font=('Segoe UI', 10, 'bold')).pack(anchor='nw', side='top')
         
         # buttons: add / remove / copy / load (fixed at bottom - pack first)
         btns = tk.Frame(self.frm_saved, bg='#f0f0f0', height=40)
@@ -293,14 +280,10 @@ class PaletteApp(tk.Tk):
         self._saved_counter += 1
         entry = {'name': name, 'colors': []}
         self.saved_palettes.append(entry)
-        # select the first one by default
         if self.saved_palettes:
             self._saved_selected = 0
             self.render_saved_list()
 
-        # Removed saves folder creation (no longer needed)
-
-        # Scrollable canvas for palette (in case of small screens)
         self.palette_canvas = tk.Canvas(self.frm_palette, borderwidth=0, highlightthickness=0)
         self.palette_inner = ttk.Frame(self.palette_canvas)
         self.palette_vsb = ttk.Scrollbar(self.frm_palette, orient="vertical", command=self.palette_canvas.yview)
@@ -377,7 +360,6 @@ class PaletteApp(tk.Tk):
 
     def select_image(self):
         """Select image with validation, size check, and error handling."""
-        # cleanup old temp screenshot file if it exists
         if getattr(self, '_temp_screenshot', None):
             try:
                 os.unlink(self._temp_screenshot)
@@ -385,7 +367,7 @@ class PaletteApp(tk.Tk):
                 pass
             self._temp_screenshot = None
 
-        path = filedialog.askopenfilename(title="이미지 선택", filetypes=[("Image files", "*.png;*.jpg;*.jpeg;*.bmp;*.gif"), ("All files","*.*")])
+        path = filedialog.askopenfilename(title="Select Image", filetypes=[("Image files", "*.png;*.jpg;*.jpeg;*.bmp;*.gif"), ("All files","*.*")])
         if not path:
             return
         
@@ -461,7 +443,7 @@ class PaletteApp(tk.Tk):
         dialog.transient(self)
         dialog.grab_set()
 
-        ttk.Label(dialog, text="표시할 색상 조합을 선택하세요:", font=('Segoe UI', 10, 'bold')).pack(pady=10, padx=10, anchor='w')
+        ttk.Label(dialog, text="Select color harmonies to display:", font=('Segoe UI', 10, 'bold')).pack(pady=10, padx=10, anchor='w')
 
         # Create a scrollable frame for checkboxes
         canvas_frame = ttk.Frame(dialog)
@@ -481,6 +463,16 @@ class PaletteApp(tk.Tk):
         
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
+        
+        # Enable mousewheel scrolling
+        def on_mousewheel(e):
+            try:
+                canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+            except Exception:
+                pass
+        
+        canvas.bind('<MouseWheel>', on_mousewheel)
+        frm_checks.bind('<MouseWheel>', on_mousewheel)
 
         # Define built-in harmony schemes with labels
         schemes = [
@@ -509,7 +501,7 @@ class PaletteApp(tk.Tk):
             
             if manager.harmonies:
                 ttk.Separator(frm_checks, orient='horizontal').pack(fill='x', pady=10)
-                ttk.Label(frm_checks, text="커스텀 조합:", font=('Segoe UI', 9, 'bold')).pack(anchor='w', pady=4)
+                ttk.Label(frm_checks, text="Custom Harmonies:", font=('Segoe UI', 9, 'bold')).pack(anchor='w', pady=4)
                 
                 for i, harmony in enumerate(manager.harmonies):
                     harmony_name = harmony.get('name', f'커스텀 {i+1}')
@@ -537,8 +529,8 @@ class PaletteApp(tk.Tk):
         def cancel():
             dialog.destroy()
 
-        ttk.Button(frm_buttons, text="확인", command=apply_selection).grid(row=0, column=0, padx=5)
-        ttk.Button(frm_buttons, text="취소", command=cancel).grid(row=0, column=1, padx=5)
+        ttk.Button(frm_buttons, text="OK", command=apply_selection).grid(row=0, column=0, padx=5)
+        ttk.Button(frm_buttons, text="Cancel", command=cancel).grid(row=0, column=1, padx=5)
 
     def _update_color_swatch(self, hex_color):
         """Update the color swatch canvas to show the selected color and display hex/RGB info."""
@@ -567,7 +559,7 @@ class PaletteApp(tk.Tk):
         current_color = self.hex_entry.get()
         try:
             # colorchooser.askcolor returns ((R,G,B), '#RRGGBB')
-            color_result = colorchooser.askcolor(color=current_color, title="색상 선택")
+            color_result = colorchooser.askcolor(color=current_color, title="Pick Color")
             if color_result[1]:  # if user didn't cancel
                 hex_color = color_result[1]
                 self.hex_entry.set(hex_color)
@@ -1754,7 +1746,7 @@ class PaletteApp(tk.Tk):
             tip.wm_overrideredirect(True)
             tip.wm_geometry(f"+{e.x_root+10}+{e.y_root+10}")
             
-            label = tk.Label(tip, text="좌클릭: 팔레트에 추가\n우클릭: 베이스 색상으로 설정", 
+            label = tk.Label(tip, text="Left click: Add to palette\nRight click: Set as base color", 
                            bg='#FFFFE0', relief='solid', borderwidth=1, font=('Segoe UI', 9), padx=5, pady=3)
             label.pack()
             tooltip_window[0] = tip
@@ -2042,9 +2034,9 @@ class PaletteApp(tk.Tk):
         view_label = 'RGB로 보기' if current_mode == 'value' else '밸류로 보기'
         
         menu = tk.Menu(self, tearoff=0)
-        menu.add_command(label='이름 바꾸기', command=lambda: self.rename_palette(idx))
-        menu.add_command(label='팔레트 편집', command=lambda: self.open_palette_editor(idx))
-        menu.add_command(label='팔레트 저장', command=lambda: self.save_palette_file(idx))
+        menu.add_command(label='Rename', command=lambda: self.rename_palette(idx))
+        menu.add_command(label='Edit Palette', command=lambda: self.open_palette_editor(idx))
+        menu.add_command(label='Save Palette', command=lambda: self.save_palette_file(idx))
         menu.add_separator()
         menu.add_command(label='TXT로 내보내기', command=lambda: self.export_palette_txt(idx))
         menu.add_command(label='PNG로 내보내기', command=lambda: self.export_palette_png(idx))
@@ -2070,7 +2062,7 @@ class PaletteApp(tk.Tk):
             dialog.transient(self)
             dialog.grab_set()
             
-            ttk.Label(dialog, text='새 이름:').pack(pady=(10,5))
+            ttk.Label(dialog, text='New name:').pack(pady=(10,5))
             entry_name = ttk.Entry(dialog)
             entry_name.pack(padx=10, pady=5, fill='x')
             entry_name.insert(0, old_name)
@@ -2088,8 +2080,8 @@ class PaletteApp(tk.Tk):
             
             btn_frame = ttk.Frame(dialog)
             btn_frame.pack(pady=10)
-            ttk.Button(btn_frame, text='확인', command=save_name).pack(side='left', padx=5)
-            ttk.Button(btn_frame, text='취소', command=dialog.destroy).pack(side='left', padx=5)
+            ttk.Button(btn_frame, text='OK', command=save_name).pack(side='left', padx=5)
+            ttk.Button(btn_frame, text='Cancel', command=dialog.destroy).pack(side='left', padx=5)
         except Exception as e:
             messagebox.showerror('오류', str(e))
 
@@ -2125,7 +2117,7 @@ class PaletteApp(tk.Tk):
                 show_as_value[0] = show_value_var.get()
                 draw_colors()
             
-            ttk.Checkbutton(toggle_frame, text='밸류로 보기', variable=show_value_var, command=toggle_value_display).pack(side='left')
+            ttk.Checkbutton(toggle_frame, text='Show Values', variable=show_value_var, command=toggle_value_display).pack(side='left')
             
             # Tooltip label for color info (hidden by default)
             tooltip_label = tk.Label(editor_dialog, text='', bg='#FFFFE0', relief='solid', borderwidth=1, font=('Segoe UI', 9))
@@ -2296,7 +2288,7 @@ class PaletteApp(tk.Tk):
             btn_frame.pack(fill='x', padx=10, pady=(5,5))
             
             def add_color():
-                color_result = colorchooser.askcolor(title='색상 추가')
+                color_result = colorchooser.askcolor(title='Add Color')
                 if color_result[1]:
                     hex_color = color_result[1]
                     if selected_color_idx[0] is not None and working_colors:
@@ -2309,7 +2301,7 @@ class PaletteApp(tk.Tk):
             def edit_color():
                 if selected_color_idx[0] is not None and working_colors:
                     current_color = working_colors[selected_color_idx[0]]
-                    color_result = colorchooser.askcolor(color=current_color, title='색상 수정')
+                    color_result = colorchooser.askcolor(color=current_color, title='Edit Color')
                     if color_result[1]:
                         working_colors[selected_color_idx[0]] = color_result[1]
                         draw_colors()
@@ -2569,7 +2561,7 @@ class PaletteApp(tk.Tk):
                 # AI recommendation mode
                 from ai_color_recommender import AISettings, AIColorRecommender
                 
-                settings = AISettings.load_settings()
+                settings = AISettings.load_settings(self.file_handler)
                 api_key = settings.get('api_key', '')
                 
                 if not api_key:
@@ -3325,7 +3317,7 @@ class PaletteApp(tk.Tk):
             # 현재 선택된 색상을 베이스로 사용
             current_color = self.hex_entry.get() or '#FF0000'
             
-            manager = CustomHarmonyManager()
+            manager = CustomHarmonyManager(self.file_handler)
             CustomHarmonyDialog(self, manager, self.generator, current_color)
             
         except ImportError:
@@ -3339,12 +3331,12 @@ class PaletteApp(tk.Tk):
             from ai_color_recommender import AISettings, AIColorRecommender
             
             # Load current settings
-            settings = AISettings.load_settings()
+            settings = AISettings.load_settings(self.file_handler)
             
             # Create dialog
             dialog = tk.Toplevel(self)
             dialog.title('AI 요청 설정')
-            dialog.geometry('450x300')
+            dialog.geometry('500x420')
             dialog.transient(self)
             dialog.grab_set()
             
@@ -3398,7 +3390,7 @@ class PaletteApp(tk.Tk):
             
             # Buttons
             btn_frame = ttk.Frame(main_frame)
-            btn_frame.pack(pady=10)
+            btn_frame.pack(pady=20, side='bottom')
             
             ttk.Button(btn_frame, text='API 키 테스트', command=test_api).pack(side='left', padx=5)
             
@@ -3407,7 +3399,7 @@ class PaletteApp(tk.Tk):
                 num_colors = num_colors_var.get()
                 keywords = keywords_var.get().strip()
                 
-                if AISettings.save_settings(api_key, num_colors, keywords):
+                if AISettings.save_settings(self.file_handler, api_key, num_colors, keywords):
                     # Initialize AI recommender
                     if api_key:
                         try:

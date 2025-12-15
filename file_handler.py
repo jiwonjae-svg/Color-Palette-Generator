@@ -1,6 +1,6 @@
 """
 File Handler Module
-PGF 파일 저장/로드, 암호화, 최근 파일 관리를 담당하는 모듈
+Handles PGF file save/load, encryption, and recent files management
 """
 
 import os
@@ -8,24 +8,20 @@ import json
 import base64
 import logging
 from cryptography.fernet import Fernet
-import hashlib
 from tkinter import messagebox
 
-# Embedded encryption key for saves folder (keep secure)
-EMBEDDED_SAVES_KEY = b'VkZURWYzbUtiSFJ0Z2oyWHFwQjRwbjlSVldyakFrOWJPTUhjbGlDZmJZdz0='
+EMBEDDED_KEY = b'VkZURWYzbUtiSFJ0Z2oyWHFwQjRwbjlSVldyakFrOWJPTUhjbGlDZmJZdz0='
 
 
 class FileHandler:
-    """파일 저장/로드 관리 클래스"""
+    """File operations with encryption"""
     
-    def __init__(self, saves_root='./saves'):
-        self.saves_root = saves_root
-        os.makedirs(self.saves_root, exist_ok=True)
-        # Decode the base64 encoded key
-        self._fernet_key = base64.b64decode(EMBEDDED_SAVES_KEY)
+    def __init__(self):
+        self._fernet_key = base64.b64decode(EMBEDDED_KEY)
+        os.makedirs('data', exist_ok=True)
     
     def _encrypt_aes(self, data_string):
-        """AES 암호화"""
+        """AES encryption"""
         try:
             fernet = Fernet(self._fernet_key)
             return fernet.encrypt(data_string.encode('utf-8'))
@@ -34,7 +30,7 @@ class FileHandler:
             raise
     
     def _decrypt_aes(self, encrypted_data):
-        """AES 복호화"""
+        """AES decryption"""
         try:
             fernet = Fernet(self._fernet_key)
             return fernet.decrypt(encrypted_data).decode('utf-8')
@@ -43,28 +39,23 @@ class FileHandler:
             raise
     
     def save_to_file(self, path, workspace_data):
-        """워크스페이스를 파일에 저장"""
+        """Save workspace to encrypted file"""
         try:
-            # Validate path
             if not path:
-                raise ValueError("저장 경로가 지정되지 않았습니다.")
+                raise ValueError("No save path specified")
             
-            # Ensure directory exists
             directory = os.path.dirname(path)
             if directory and not os.path.exists(directory):
                 os.makedirs(directory, exist_ok=True)
             
-            # Encrypt and save using AES
             data_json = json.dumps(workspace_data, ensure_ascii=False)
             encrypted = self._encrypt_aes(data_json)
             
-            # Write to temporary file first
             temp_path = path + '.tmp'
             try:
                 with open(temp_path, 'wb') as f:
                     f.write(encrypted)
                 
-                # Replace original file atomically
                 if os.path.exists(path):
                     backup_path = path + '.bak'
                     if os.path.exists(backup_path):
@@ -73,7 +64,6 @@ class FileHandler:
                 
                 os.rename(temp_path, path)
                 
-                # Clean up backup if save was successful
                 backup_path = path + '.bak'
                 if os.path.exists(backup_path):
                     try:
@@ -82,7 +72,6 @@ class FileHandler:
                         pass
                         
             except Exception as write_error:
-                # Clean up temp file
                 if os.path.exists(temp_path):
                     try:
                         os.remove(temp_path)
@@ -94,37 +83,35 @@ class FileHandler:
             return True
             
         except PermissionError:
-            messagebox.showerror('Save Error', '파일에 쓰기 권한이 없습니다.')
+            messagebox.showerror('Save Error', 'Permission denied')
             logging.error(f"Save failed: Permission denied for {path}")
             return False
         except OSError as e:
-            messagebox.showerror('Save Error', f'디스크 오류: {str(e)}')
+            messagebox.showerror('Save Error', f'Disk error: {str(e)}')
             logging.error(f"Save failed: OS error - {str(e)}")
             return False
         except Exception as e:
-            messagebox.showerror('Save Error', f'저장 실패: {str(e)}')
+            messagebox.showerror('Save Error', f'Save failed: {str(e)}')
             logging.error(f"Save failed: {str(e)}")
             return False
     
     def load_from_file(self, path):
-        """파일에서 워크스페이스 로드"""
+        """Load workspace from encrypted file"""
         try:
             if not os.path.exists(path):
-                raise FileNotFoundError(f"파일을 찾을 수 없습니다: {path}")
+                raise FileNotFoundError(f"File not found: {path}")
             
             with open(path, 'rb') as f:
                 file_data = f.read()
             
-            # Try AES decryption first, fallback to base64 for old files
             try:
                 data_json = self._decrypt_aes(file_data)
             except Exception:
-                # Try base64 decoding for backward compatibility
                 try:
                     data_json = base64.b64decode(file_data).decode('utf-8')
                     logging.info("Loaded old format file (base64)")
                 except Exception:
-                    raise ValueError("파일 형식을 인식할 수 없습니다.")
+                    raise ValueError("Unrecognized file format")
             
             workspace_data = json.loads(data_json)
             logging.info(f"Loaded workspace: {path}")
@@ -135,45 +122,88 @@ class FileHandler:
             logging.error(str(e))
             return None
         except json.JSONDecodeError:
-            messagebox.showerror('Load Error', 'JSON 파싱 실패. 파일이 손상되었습니다.')
+            messagebox.showerror('Load Error', 'JSON parsing failed. File corrupted.')
             logging.error(f"JSON decode error for {path}")
             return None
         except Exception as e:
-            messagebox.showerror('Load Error', f'로드 실패: {str(e)}')
+            messagebox.showerror('Load Error', f'Load failed: {str(e)}')
             logging.error(f"Load failed: {str(e)}")
             return None
     
     def get_recent_files_path(self):
-        """최근 파일 목록 경로"""
-        temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'Temp')
-        os.makedirs(temp_dir, exist_ok=True)
-        return os.path.join(temp_dir, 'recent_files.json')
+        """Recent files list path in data folder"""
+        return os.path.join('data', 'recent_files.dat')
     
     def load_recent_files(self):
-        """최근 파일 목록 로드"""
-        try:
-            recent_path = self.get_recent_files_path()
-            if os.path.exists(recent_path):
-                with open(recent_path, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-        except Exception as e:
-            logging.error(f"Load recent files error: {e}")
-        return []
+        """Load recent files list"""
+        return self.load_data_file('recent_files.dat', default=[])
     
     def save_recent_files(self, recent_files):
-        """최근 파일 목록 저장"""
-        try:
-            recent_path = self.get_recent_files_path()
-            with open(recent_path, 'w', encoding='utf-8') as f:
-                json.dump(recent_files, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            logging.error(f"Save recent files error: {e}")
+        """Save recent files list"""
+        self.save_data_file('recent_files.dat', recent_files)
     
     def add_recent_file(self, file_path, recent_files, max_recent=10):
-        """최근 파일 목록에 추가"""
+        """Add file to recent files list"""
         if file_path in recent_files:
             recent_files.remove(file_path)
         recent_files.insert(0, file_path)
         if len(recent_files) > max_recent:
             recent_files = recent_files[:max_recent]
         return recent_files
+    
+    def save_data_file(self, filename, data, data_dir='data'):
+        """Save data to encrypted .dat file"""
+        try:
+            os.makedirs(data_dir, exist_ok=True)
+            
+            filepath = os.path.join(data_dir, filename)
+            if not filepath.endswith('.dat'):
+                filepath += '.dat'
+            
+            data_json = json.dumps(data, ensure_ascii=False)
+            encrypted = self._encrypt_aes(data_json)
+            
+            with open(filepath, 'wb') as f:
+                f.write(encrypted)
+            
+            logging.info(f"Saved data file: {filepath}")
+            return True
+        except Exception as e:
+            logging.error(f"Save data file error: {e}")
+            return False
+    
+    def load_data_file(self, filename, data_dir='data', default=None):
+        """Load data from encrypted .dat file"""
+        try:
+            filepath = os.path.join(data_dir, filename)
+            if not filepath.endswith('.dat'):
+                filepath += '.dat'
+            
+            if not os.path.exists(filepath):
+                json_path = filepath.replace('.dat', '.json')
+                if os.path.exists(json_path):
+                    with open(json_path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                    self.save_data_file(filename, data, data_dir)
+                    logging.info(f"Migrated JSON to DAT: {json_path} -> {filepath}")
+                    return data
+                return default
+            
+            with open(filepath, 'rb') as f:
+                encrypted_data = f.read()
+            
+            data_json = self._decrypt_aes(encrypted_data)
+            data = json.loads(data_json)
+            
+            logging.info(f"Loaded data file: {filepath}")
+            return data
+        except Exception as e:
+            logging.error(f"Load data file error: {e}")
+            try:
+                json_path = os.path.join(data_dir, filename.replace('.dat', '.json'))
+                if os.path.exists(json_path):
+                    with open(json_path, 'r', encoding='utf-8') as f:
+                        return json.load(f)
+            except Exception:
+                pass
+            return default

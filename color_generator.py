@@ -1,6 +1,6 @@
 """
 Color Palette Generator Module
-색상 팔레트 생성 및 조화 색상 계산을 담당하는 모듈
+Handles color palette generation and harmony calculations
 """
 
 from PIL import Image
@@ -11,49 +11,36 @@ import logging
 
 
 class ColorPaletteGenerator:
-    """색상 팔레트 생성 클래스"""
+    """Color palette generator class"""
     
     def __init__(self):
         pass
     
     def extract_main_colors(self, image_path, num_colors=5, filter_background=True):
-        """이미지에서 주요 색상 추출 (개선된 K-means 클러스터링).
-
-        동작:
-        - 이미지를 작게 리사이즈해 픽셀을 샘플링
-        - 배경색(흰색/검은색) 필터링 옵션
-        - 채도 기반 필터링으로 회색조 제거
-        - K-means로 대표 색상 추출
-        """
+        """Extract main colors from image using improved K-means clustering"""
         img = Image.open(image_path)
         img = img.convert('RGB')
-        img = img.resize((150, 150))  # 성능을 위해 크기 축소
+        img = img.resize((150, 150))
 
         pixels = list(img.getdata())
         
-        # Filter background colors (very light or very dark) and low saturation
         if filter_background:
             filtered_pixels = []
             for p in pixels:
                 r, g, b = p
-                # Calculate luminance
                 lum = 0.299 * r + 0.587 * g + 0.114 * b
-                # Calculate saturation
                 max_c = max(r, g, b)
                 min_c = min(r, g, b)
                 sat = 0 if max_c == 0 else (max_c - min_c) / max_c
                 
-                # Filter out very light (>240), very dark (<15), or low saturation (<0.15)
                 if not (lum > 240 or lum < 15 or sat < 0.15):
                     filtered_pixels.append(p)
             
-            # If too many filtered, use original
             pixels = filtered_pixels if len(filtered_pixels) > 100 else pixels
         
         unique_colors = set(pixels)
         unique_count = len(unique_colors)
 
-        # If the image has relatively few distinct colors, return the most common ones
         if unique_count <= num_colors:
             pixel_count = Counter(pixels)
             main_colors = [c for c, _ in pixel_count.most_common(num_colors)]

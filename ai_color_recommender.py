@@ -24,7 +24,8 @@ class AIColorRecommender:
         try:
             import google.generativeai as genai
             genai.configure(api_key=self.api_key)
-            self.model = genai.GenerativeModel('gemini-2.0-flash-exp')
+            # gemini-pro는 더 안정적이고 무료 tier에서 사용 가능
+            self.model = genai.GenerativeModel('gemini-pro')
             return True
         except ImportError:
             raise ImportError("google-generativeai 라이브러리가 설치되지 않았습니다.\n'pip install google-generativeai'를 실행하세요.")
@@ -127,34 +128,26 @@ Each line should be one palette. Make the palettes diverse and harmonious."""
 class AISettings:
     """AI 설정 관리"""
     
-    CONFIG_FILE = 'ai_config.json'
-    
     @classmethod
-    def save_settings(cls, api_key: str, num_colors: int = 5, keywords: str = "") -> bool:
-        """설정 저장"""
+    def save_settings(cls, file_handler, api_key: str, num_colors: int = 5, keywords: str = "") -> bool:
+        """설정 저장 (FileHandler 사용)"""
         try:
             data = {
                 'api_key': api_key,
                 'num_colors': num_colors,
                 'keywords': keywords
             }
-            with open(cls.CONFIG_FILE, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2)
-            return True
+            return file_handler.save_data_file('ai_config.dat', data)
         except Exception:
             return False
     
     @classmethod
-    def load_settings(cls) -> dict:
-        """설정 불러오기"""
-        if os.path.exists(cls.CONFIG_FILE):
-            try:
-                with open(cls.CONFIG_FILE, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except Exception:
-                pass
-        return {
+    def load_settings(cls, file_handler) -> dict:
+        """설정 불러오기 (FileHandler 사용)"""
+        return file_handler.load_data_file('ai_config.dat', default={
             'api_key': '',
             'num_colors': 5,
             'keywords': ''
-        }
+        })
+
+
