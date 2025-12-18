@@ -1585,7 +1585,7 @@ class PaletteApp(tk.Tk):
     
     def setup_logging(self):
         """Setup logging to file in Temp directory."""
-        temp_dir = os.path.join(os.path.dirname(__file__), 'Temp')
+        temp_dir = os.path.join(os.path.dirname(__file__), 'temp')
         os.makedirs(temp_dir, exist_ok=True)
         log_file = os.path.join(temp_dir, 'app.log')
         
@@ -1700,7 +1700,7 @@ class PaletteApp(tk.Tk):
     
     def get_temp_dir(self):
         """Get or create Temp directory for app data."""
-        temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'Temp')
+        temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'temp')
         try:
             os.makedirs(temp_dir, exist_ok=True)
         except Exception:
@@ -3698,8 +3698,11 @@ class PaletteApp(tk.Tk):
             'image_path': None,
             'original_image': None,
             'current_palette_idx': 0,
-            'preview_photo': None
+            'preview_photo': None,
+            'recolored_cache': {},
         }
+
+        recolorer = ImageRecolorer()
         
         # Top panel: palette selection
         top_frame = ttk.Frame(dialog, padding=10)
@@ -3800,8 +3803,11 @@ class PaletteApp(tk.Tk):
             
             try:
                 # Apply palette to get recolored image
-                recolorer = ImageRecolorer()
-                recolored = recolorer.apply_palette_to_image(state['image_path'], palette['colors'])
+                cache_key = (state['image_path'], state['current_palette_idx'])
+                recolored = state['recolored_cache'].get(cache_key)
+                if recolored is None:
+                    recolored = recolorer.apply_palette_to_image(state['image_path'], palette['colors'])
+                    state['recolored_cache'][cache_key] = recolored
                 
                 # Create window with exact recolored image size (no padding)
                 orig_window = tk.Toplevel(dialog)
@@ -3841,8 +3847,13 @@ class PaletteApp(tk.Tk):
             if output_path:
                 try:
                     palette = self.saved_palettes[state['current_palette_idx']]
-                    recolorer = ImageRecolorer()
-                    recolorer.save_recolored_image(state['image_path'], palette['colors'], output_path)
+
+                    cache_key = (state['image_path'], state['current_palette_idx'])
+                    recolored = state['recolored_cache'].get(cache_key)
+                    if recolored is None:
+                        recolored = recolorer.apply_palette_to_image(state['image_path'], palette['colors'])
+                        state['recolored_cache'][cache_key] = recolored
+                    recolored.save(output_path)
                     messagebox.showinfo(self.lang.get('saved_title'), self.lang.get('msg_recolor_save_success').format(path=output_path))
                     self.log_action(f"Saved recolored image: {os.path.basename(output_path)}")
                 except Exception as e:
@@ -3879,14 +3890,19 @@ class PaletteApp(tk.Tk):
                     preview_canvas.create_text(260, 190, text=self.lang.get('recolor_empty_palette'), fill='white', font=('Arial', 12))
                     return
                 
-                recolorer = ImageRecolorer()
-                
-                # Apply palette to image
-                recolored = recolorer.apply_palette_to_image(state['image_path'], palette['colors'])
-                
-                # Resize to fit preview canvas (520x380)
-                img_copy = recolored.copy()
-                img_copy.thumbnail((520, 380), Image.Resampling.LANCZOS)
+                # Preview: recolor a downscaled copy for speed
+                preview_img = None
+                try:
+                    if state.get('original_image') is not None:
+                        preview_img = state['original_image'].copy()
+                except Exception:
+                    preview_img = None
+
+                if preview_img is None:
+                    preview_img = Image.open(state['image_path'])
+
+                preview_img.thumbnail((520, 380), Image.Resampling.LANCZOS)
+                img_copy = recolorer.apply_palette_to_pil_image(preview_img, palette['colors'])
                 
                 # Update canvas (centered at canvas center: 260, 190)
                 preview_canvas.delete('all')
