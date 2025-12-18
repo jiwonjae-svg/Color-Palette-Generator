@@ -8,29 +8,35 @@ import json
 import re
 from typing import List, Tuple, Optional
 
+from language_manager import LanguageManager
+
 
 class AIColorRecommender:
     """AI 기반 색상 추천 클래스"""
     
-    def __init__(self, api_key: Optional[str] = None):
+    def __init__(self, api_key: Optional[str] = None, lang: Optional[LanguageManager] = None):
         self.api_key = api_key
         self.model = None
+        self.lang = lang or LanguageManager('en')
         
         if api_key:
             self.initialize_model()
+
+    def _t(self, key: str, **kwargs) -> str:
+        text = self.lang.get(key)
+        return text.format(**kwargs) if kwargs else text
     
     def initialize_model(self):
         """Gemini 모델 초기화"""
         try:
             import google.generativeai as genai
             genai.configure(api_key=self.api_key)
-            # gemini-pro는 더 안정적이고 무료 tier에서 사용 가능
-            self.model = genai.GenerativeModel('gemini-pro')
+            self.model = genai.GenerativeModel('gemini-2.5-flash-lite')
             return True
         except ImportError:
-            raise ImportError("google-generativeai 라이브러리가 설치되지 않았습니다.\n'pip install google-generativeai'를 실행하세요.")
+            raise ImportError(self._t('ai_recommender_missing_library', install_cmd='pip install google-generativeai'))
         except Exception as e:
-            raise Exception(f"Gemini 모델 초기화 실패: {str(e)}")
+            raise Exception(self._t('ai_recommender_init_failed', error=str(e)))
     
     def set_api_key(self, api_key: str) -> bool:
         """API 키 설정"""
@@ -41,7 +47,7 @@ class AIColorRecommender:
         except Exception:
             return False
     
-    def generate_palettes(self, num_palettes: int = 5, keywords: str = "", num_colors: int = 5) -> List[List[str]]:
+    def generate_palettes(self, num_palettes: int = 5, keywords: str = "", num_colors: int = 5) -> List[dict]:
         """
         AI로 색상 팔레트 생성
         
@@ -51,31 +57,25 @@ class AIColorRecommender:
             num_colors: 팔레트당 색상 개수
         
         Returns:
-            팔레트 리스트 (각 팔레트는 HEX 색상 코드 리스트)
+            팔레트 리스트 (각 팔레트는 {'name': str, 'colors': List[str]} 딕셔너리)
         """
         if not self.model:
-            raise Exception("API 키가 설정되지 않았습니다.")
+            raise Exception(self._t('ai_recommender_api_key_not_set'))
         
-        # 프롬프트 생성
+        # 프롬프트 생성 (이름 포함)
         if keywords.strip():
-            prompt = f"""Generate {num_palettes} harmonious color palettes, each with exactly {num_colors} colors.
-Keywords: {keywords}
-
-Return ONLY the hex color codes in this exact format, with no additional text or explanation:
-#RRGGBB,#RRGGBB,#RRGGBB,#RRGGBB,#RRGGBB
-#RRGGBB,#RRGGBB,#RRGGBB,#RRGGBB,#RRGGBB
-...
-
-Each line should be one palette. Make the palettes harmonious and suitable for the given keywords."""
+            prompt = self._t(
+                'ai_recommender_prompt_with_keywords',
+                num_palettes=num_palettes,
+                num_colors=num_colors,
+                keywords=keywords,
+            )
         else:
-            prompt = f"""Generate {num_palettes} diverse and harmonious color palettes, each with exactly {num_colors} colors.
-
-Return ONLY the hex color codes in this exact format, with no additional text or explanation:
-#RRGGBB,#RRGGBB,#RRGGBB,#RRGGBB,#RRGGBB
-#RRGGBB,#RRGGBB,#RRGGBB,#RRGGBB,#RRGGBB
-...
-
-Each line should be one palette. Make the palettes diverse and harmonious."""
+            prompt = self._t(
+                'ai_recommender_prompt_without_keywords',
+                num_palettes=num_palettes,
+                num_colors=num_colors,
+            )
         
         try:
             response = self.model.generate_content(prompt)
@@ -86,10 +86,10 @@ Each line should be one palette. Make the palettes diverse and harmonious."""
             return palettes[:num_palettes]  # 요청한 개수만큼 반환
             
         except Exception as e:
-            raise Exception(f"AI 팔레트 생성 실패: {str(e)}")
+            raise Exception(self._t('ai_recommender_generation_failed', error=str(e)))
     
-    def _parse_response(self, text: str, expected_colors: int) -> List[List[str]]:
-        """AI 응답 파싱"""
+    def _parse_response(self, text: str, expected_colors: int) -> List[dict]:
+        """AI 응답 파싱 - 팔레트 이름과 색상 추출"""
         palettes = []
         
         # HEX 색상 코드 패턴
@@ -98,31 +98,47 @@ Each line should be one palette. Make the palettes diverse and harmonious."""
         # 줄 단위로 처리
         lines = text.split('\n')
         for line in lines:
-            # HEX 코드 찾기
-            colors = re.findall(hex_pattern, line)
-            
-            if colors and len(colors) >= expected_colors:
-                # 대문자로 통일
-                colors = [c.upper() for c in colors[:expected_colors]]
-                palettes.append(colors)
+            # "PaletteName: #HEX,#HEX,..." 형식 파싱
+            if ':' in line:
+                parts = line.split(':', 1)
+                name = parts[0].strip()
+                colors = re.findall(hex_pattern, parts[1])
+                
+                if colors and len(colors) >= expected_colors and name:
+                    # 대문자로 통일
+                    colors = [c.upper() for c in colors[:expected_colors]]
+                    palettes.append({
+                        'name': name,
+                        'colors': colors
+                    })
+            else:
+                # 이름 없이 색상만 있는 경우 (하위 호환성)
+                colors = re.findall(hex_pattern, line)
+                if colors and len(colors) >= expected_colors:
+                    # 대문자로 통일
+                    colors = [c.upper() for c in colors[:expected_colors]]
+                    palettes.append({
+                        'name': self.lang.get('palette_numbered').format(i=len(palettes) + 1),
+                        'colors': colors
+                    })
         
         return palettes
     
     def test_api_key(self) -> Tuple[bool, str]:
         """API 키 테스트"""
         if not self.api_key:
-            return False, "API 키가 설정되지 않았습니다."
+            return False, self._t('ai_recommender_api_key_not_set')
         
         try:
             self.initialize_model()
             # 간단한 테스트 요청
-            response = self.model.generate_content("Say 'OK' if you can read this.")
+            response = self.model.generate_content(self._t('ai_recommender_test_prompt'))
             if response and response.text:
-                return True, "API 키가 정상적으로 작동합니다."
+                return True, self._t('ai_recommender_test_success')
             else:
-                return False, "응답을 받을 수 없습니다."
+                return False, self._t('ai_recommender_test_no_response')
         except Exception as e:
-            return False, f"API 키 테스트 실패: {str(e)}"
+            return False, self._t('ai_recommender_test_failed', error=str(e))
 
 
 class AISettings:
@@ -149,5 +165,4 @@ class AISettings:
             'num_colors': 5,
             'keywords': ''
         })
-
 

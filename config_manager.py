@@ -17,13 +17,18 @@ class ConfigManager:
         'kmeans_max_iterations': 12,
         'window_width': 700,
         'window_height': 520,
-        'theme': 'default',
+        'theme': 'light',  # 'light' or 'dark'
+        'language': 'ko',  # 'ko' or 'en'
         'background_luminance_high': 240,
         'background_luminance_low': 15,
         'saturation_threshold': 0.15,
         'max_recent_files': 10,
         'default_export_format': 'png',
-        'screen_picker_size': 100
+        'screen_picker_size': 100,
+
+        # Recent colors
+        'recent_colors': [],
+        'max_recent_colors': 50
     }
     
     def __init__(self, file_handler):

@@ -8,7 +8,6 @@ import json
 import base64
 import logging
 from cryptography.fernet import Fernet
-from tkinter import messagebox
 
 EMBEDDED_KEY = b'VkZURWYzbUtiSFJ0Z2oyWHFwQjRwbjlSVldyakFrOWJPTUhjbGlDZmJZdz0='
 
@@ -83,15 +82,12 @@ class FileHandler:
             return True
             
         except PermissionError:
-            messagebox.showerror('Save Error', 'Permission denied')
             logging.error(f"Save failed: Permission denied for {path}")
             return False
         except OSError as e:
-            messagebox.showerror('Save Error', f'Disk error: {str(e)}')
             logging.error(f"Save failed: OS error - {str(e)}")
             return False
         except Exception as e:
-            messagebox.showerror('Save Error', f'Save failed: {str(e)}')
             logging.error(f"Save failed: {str(e)}")
             return False
     
@@ -118,15 +114,12 @@ class FileHandler:
             return workspace_data
             
         except FileNotFoundError as e:
-            messagebox.showerror('Load Error', str(e))
             logging.error(str(e))
             return None
         except json.JSONDecodeError:
-            messagebox.showerror('Load Error', 'JSON parsing failed. File corrupted.')
             logging.error(f"JSON decode error for {path}")
             return None
         except Exception as e:
-            messagebox.showerror('Load Error', f'Load failed: {str(e)}')
             logging.error(f"Load failed: {str(e)}")
             return None
     

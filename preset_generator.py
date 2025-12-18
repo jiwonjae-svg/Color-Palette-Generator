@@ -1,17 +1,9 @@
 """
 Preset Palette Generator
-사전 정의 팔레트 생성 및 관리 모듈
+Generate and manage predefined color palettes
 """
 
-import json
-import gzip
-import base64
-from cryptography.fernet import Fernet
-import os
 import random
-
-# Embedded encryption key (keep this secure - do not share)
-EMBEDDED_ENCRYPTION_KEY = b'55EDKL_A1eUzicBsX0mr0u7hIZI44eHiF5KrArRC8YA='
 
 
 class PresetPaletteGenerator:
@@ -558,48 +550,36 @@ class PresetPaletteGenerator:
         self.palettes = palettes
         return palettes
     
-    def save_palettes(self, filename='preset_palettes.dat'):
-        """Save palettes to encrypted compressed file"""
+    def save_palettes(self, file_handler, filename='preset_palettes.dat'):
+        """Save palettes using file_handler encryption"""
         try:
-            # Convert to JSON
-            data = json.dumps(self.palettes, ensure_ascii=False)
+            data = {
+                'palettes': self.palettes,
+                'count': len(self.palettes)
+            }
             
-            # Compress
-            compressed = gzip.compress(data.encode('utf-8'))
+            success = file_handler.save_data_file(filename, data, data_dir='data')
             
-            # Encrypt using embedded key
-            fernet = Fernet(EMBEDDED_ENCRYPTION_KEY)
-            encrypted = fernet.encrypt(compressed)
-            
-            # Save encrypted data
-            with open(filename, 'wb') as f:
-                f.write(encrypted)
-            
-            print(f"✓ Saved {len(self.palettes)} palettes to {filename}")
-            print(f"✓ Using embedded encryption key (secure)")
-            return True
+            if success:
+                print(f"✓ Saved {len(self.palettes)} palettes to data/{filename}")
+                print(f"✓ Using file_handler encryption")
+            return success
         except Exception as e:
             print(f"Error saving palettes: {e}")
             return False
     
     @staticmethod
-    def load_palettes(filename='preset_palettes.dat'):
-        """Load palettes from encrypted file"""
+    def load_palettes(file_handler, filename='preset_palettes.dat'):
+        """Load palettes using file_handler decryption"""
         try:
-            # Load encrypted data
-            with open(filename, 'rb') as f:
-                encrypted = f.read()
+            data = file_handler.load_data_file(filename, data_dir='data', default=None)
             
-            # Decrypt using embedded key
-            fernet = Fernet(EMBEDDED_ENCRYPTION_KEY)
-            compressed = fernet.decrypt(encrypted)
+            if data is None:
+                print(f"No palette file found: data/{filename}")
+                return []
             
-            # Decompress
-            data = gzip.decompress(compressed).decode('utf-8')
-            
-            # Parse JSON
-            palettes = json.loads(data)
-            print(f"✓ Loaded {len(palettes)} palettes from {filename}")
+            palettes = data.get('palettes', [])
+            print(f"✓ Loaded {len(palettes)} palettes from data/{filename}")
             return palettes
         except Exception as e:
             print(f"Error loading palettes: {e}")
@@ -608,13 +588,16 @@ class PresetPaletteGenerator:
 
 # Generate palettes if run directly
 if __name__ == "__main__":
+    from file_handler import FileHandler
+    
+    file_handler = FileHandler()
     generator = PresetPaletteGenerator()
     palettes = generator.generate_all_palettes(count=1200)
     print(f"Generated {len(palettes)} palettes")
     
-    # Save to file
-    generator.save_palettes('preset_palettes.dat')
+    # Save to data folder using file_handler
+    generator.save_palettes(file_handler, 'preset_palettes.dat')
     
     # Test loading
-    loaded = PresetPaletteGenerator.load_palettes('preset_palettes.dat')
+    loaded = PresetPaletteGenerator.load_palettes(file_handler, 'preset_palettes.dat')
     print(f"Verification: Loaded {len(loaded)} palettes")
