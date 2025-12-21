@@ -7,6 +7,7 @@ import tempfile
 import logging
 import hashlib
 import colorsys
+import base64
 from cryptography.fernet import Fernet
 
 # Import new modules
@@ -15,6 +16,12 @@ from file_handler import FileHandler
 from config_manager import ConfigManager
 from image_recolorer import ImageRecolorer
 from language_manager import LanguageManager
+
+# Import embedded icon
+try:
+    from embedded_icon import EMBEDDED_ICON_DATA
+except ImportError:
+    EMBEDDED_ICON_DATA = None
 
 # Import color adjuster if available
 try:
@@ -25,11 +32,53 @@ except Exception:
     apply_contrast = None
     apply_warmth = None
 
+# Global icon path for all windows
+_ICON_PATH = None
+
+def get_icon_path():
+    """Get or create icon path from embedded data"""
+    global _ICON_PATH
+    
+    if _ICON_PATH and os.path.exists(_ICON_PATH):
+        return _ICON_PATH
+    
+    # Try to load from embedded data
+    if EMBEDDED_ICON_DATA:
+        try:
+            icon_data = base64.b64decode(EMBEDDED_ICON_DATA.strip())
+            temp_icon = tempfile.NamedTemporaryFile(delete=False, suffix='.ico')
+            temp_icon.write(icon_data)
+            temp_icon.close()
+            _ICON_PATH = temp_icon.name
+            return _ICON_PATH
+        except Exception:
+            pass
+    
+    # Fallback to external icon file
+    icon_path = os.path.join(os.path.dirname(__file__), 'icon.ico')
+    if os.path.exists(icon_path):
+        _ICON_PATH = icon_path
+        return _ICON_PATH
+    
+    return None
+
+def set_window_icon(window):
+    """Apply icon to any window (main or Toplevel)"""
+    try:
+        icon_path = get_icon_path()
+        if icon_path:
+            window.iconbitmap(icon_path)
+    except Exception:
+        pass  # Ignore if icon setting fails
+
 # ColorPaletteGenerator class is now in color_generator.py
 
 class PaletteApp(tk.Tk):
     def __init__(self):
         super().__init__()
+        
+        # Set window icon using helper function
+        set_window_icon(self)
         
         self.file_handler = FileHandler()
         self.config_manager = ConfigManager(self.file_handler)
@@ -515,6 +564,7 @@ class PaletteApp(tk.Tk):
     def open_harmony_selector(self):
         """Open a dialog to select which color harmony schemes to display."""
         dialog = tk.Toplevel(self)
+        set_window_icon(dialog)
         dialog.title(self.lang.get('harmonies_title'))
         dialog.geometry("400x500")
         dialog.transient(self)
@@ -2385,6 +2435,7 @@ class PaletteApp(tk.Tk):
             
             # Create a simple dialog for renaming
             dialog = tk.Toplevel(self)
+            set_window_icon(dialog)
             dialog.title(self.lang.get('rename'))
             dialog.geometry('300x130')
             dialog.resizable(False, False)
@@ -2419,6 +2470,7 @@ class PaletteApp(tk.Tk):
         try:
             entry = self.saved_palettes[idx]
             editor_dialog = tk.Toplevel(self)
+            set_window_icon(editor_dialog)
             editor_dialog.title(self.lang.get('palette_editor_title').format(name=entry["name"]))
             editor_dialog.geometry('600x200')
             editor_dialog.resizable(False, False)
@@ -2843,6 +2895,10 @@ class PaletteApp(tk.Tk):
                 encoded = base64.b64encode(data.encode('utf-8')).decode('utf-8')
                 with open(filename, 'w', encoding='utf-8') as f:
                     f.write(encoded)
+                
+                # Add metadata
+                self.file_handler.add_palette_metadata(entry['name'], entry['colors'], filename)
+                
                 self.log_action(f"Saved palette to MPS: {entry['name']}")
         except Exception as e:
             messagebox.showerror(self.lang.get('save_error_title'), self.lang.get('msg_save_failed').format(error=str(e)))
@@ -2968,6 +3024,7 @@ class PaletteApp(tk.Tk):
                 
                 # Show loading dialog
                 loading_dialog = tk.Toplevel(self)
+                set_window_icon(loading_dialog)
                 loading_dialog.title(self.lang.get('ai_generating_title'))
                 loading_dialog.geometry("300x100")
                 loading_dialog.transient(self)
@@ -3436,27 +3493,174 @@ class PaletteApp(tk.Tk):
             messagebox.showerror(self.lang.get('error'), str(e))
 
     def load_palette(self):
-        """Load palette from .mps file."""
+        """Load palette from .mps file using custom dialog."""
         try:
-            filename = filedialog.askopenfilename(
-                title=self.lang.get('dialog_open_mps'),
-                filetypes=[(self.lang.get('my_palette_file'), '*.mps'), (self.lang.get('all_files'), '*.*')]
-            )
-            if filename:
-                import json
-                import base64
-                with open(filename, 'r', encoding='utf-8') as f:
-                    encoded = f.read()
-                data = json.loads(base64.b64decode(encoded.encode('utf-8')).decode('utf-8'))
-                new_entry = {'name': data['name'], 'colors': data['colors']}
-                self.saved_palettes.append(new_entry)
-                self._saved_selected = len(self.saved_palettes) - 1
-                self.render_saved_list()
-                self.mark_modified()
-                self.log_action(f"Loaded palette from MPS: {data['name']}")
+            # Clean metadata first
+            metadata = self.file_handler.clean_palette_metadata()
+            
+            if not metadata:
+                # No saved palettes, use traditional file dialog
+                filename = filedialog.askopenfilename(
+                    title=self.lang.get('dialog_open_mps'),
+                    filetypes=[(self.lang.get('my_palette_file'), '*.mps'), (self.lang.get('all_files'), '*.*')]
+                )
+                if filename:
+                    self._load_palette_from_file(filename)
+            else:
+                # Show custom palette selection dialog
+                self._show_palette_selection_dialog(metadata)
+                
         except Exception as e:
             messagebox.showerror(self.lang.get('load_error_title'), self.lang.get('msg_load_failed').format(error=str(e)))
             self.log_action(f"Load palette failed: {str(e)}")
+    
+    def _load_palette_from_file(self, filename):
+        """Load palette from a specific file"""
+        try:
+            import json
+            import base64
+            with open(filename, 'r', encoding='utf-8') as f:
+                encoded = f.read()
+            data = json.loads(base64.b64decode(encoded.encode('utf-8')).decode('utf-8'))
+            new_entry = {'name': data['name'], 'colors': data['colors']}
+            self.saved_palettes.append(new_entry)
+            self._saved_selected = len(self.saved_palettes) - 1
+            self.render_saved_list()
+            self.mark_modified()
+            
+            # Add metadata
+            self.file_handler.add_palette_metadata(data['name'], data['colors'], filename)
+            
+            self.log_action(f"Loaded palette from MPS: {data['name']}")
+        except Exception as e:
+            raise e
+    
+    def _show_palette_selection_dialog(self, metadata):
+        """Show custom palette selection dialog"""
+        dialog = tk.Toplevel(self)
+        dialog.title(self.lang.get('dialog_open_mps'))
+        dialog.geometry('700x500')
+        dialog.transient(self)
+        dialog.grab_set()
+        
+        # Apply icon to dialog
+        set_window_icon(dialog)
+        
+        # Top frame with buttons
+        top_frame = ttk.Frame(dialog, padding=10)
+        top_frame.pack(fill='x')
+        
+        ttk.Label(top_frame, text=self.lang.get('saved_palettes_list'), font=('Arial', 12, 'bold')).pack(side='left')
+        ttk.Button(top_frame, text=self.lang.get('browse_other_file'), 
+                   command=lambda: self._browse_other_palette(dialog)).pack(side='right', padx=5)
+        
+        # Scrollable frame for palette list
+        canvas_frame = ttk.Frame(dialog)
+        canvas_frame.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        canvas = tk.Canvas(canvas_frame, bg='white', highlightthickness=1, highlightbackground='#cccccc')
+        scrollbar = ttk.Scrollbar(canvas_frame, orient='vertical', command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas)
+        
+        scrollable_frame.bind(
+            "<Configure>",
+            lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
+        )
+        
+        canvas.create_window((0, 0), window=scrollable_frame, anchor='nw', width=660)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        
+        canvas.pack(side='left', fill='both', expand=True)
+        scrollbar.pack(side='right', fill='y')
+        
+        # Display palette entries
+        for i, entry in enumerate(metadata):
+            self._create_palette_entry(scrollable_frame, entry, i, dialog)
+        
+        # Bottom buttons
+        bottom_frame = ttk.Frame(dialog, padding=10)
+        bottom_frame.pack(fill='x')
+        ttk.Button(bottom_frame, text=self.lang.get('button_close'), 
+                   command=dialog.destroy).pack(side='right')
+    
+    def _create_palette_entry(self, parent, entry, index, dialog):
+        """Create a palette entry widget"""
+        entry_frame = ttk.Frame(parent, relief='solid', borderwidth=1)
+        entry_frame.pack(fill='x', padx=5, pady=5)
+        
+        # Left side: colors preview
+        colors_frame = ttk.Frame(entry_frame)
+        colors_frame.pack(side='left', padx=10, pady=10)
+        
+        colors_canvas = tk.Canvas(colors_frame, width=200, height=40, bg='white', 
+                                  highlightthickness=0, bd=0)
+        colors_canvas.pack()
+        
+        colors = entry.get('colors', [])
+        if colors:
+            width_per_color = 200 / len(colors)
+            for i, color in enumerate(colors):
+                x1 = i * width_per_color
+                x2 = (i + 1) * width_per_color
+                colors_canvas.create_rectangle(x1, 0, x2, 40, fill=color, outline='')
+        
+        # Right side: info and load button
+        info_frame = ttk.Frame(entry_frame)
+        info_frame.pack(side='left', fill='both', expand=True, padx=10, pady=10)
+        
+        name_label = ttk.Label(info_frame, text=entry.get('name', 'Unnamed'), 
+                               font=('Arial', 11, 'bold'))
+        name_label.pack(anchor='w')
+        
+        path_label = ttk.Label(info_frame, text=entry.get('path', ''), 
+                               font=('Arial', 8), foreground='#666666')
+        path_label.pack(anchor='w')
+        
+        timestamp = entry.get('timestamp', '')
+        if timestamp:
+            try:
+                dt = datetime.datetime.fromisoformat(timestamp)
+                time_str = dt.strftime('%Y-%m-%d %H:%M')
+                time_label = ttk.Label(info_frame, text=time_str, 
+                                       font=('Arial', 8), foreground='#999999')
+                time_label.pack(anchor='w')
+            except Exception:
+                pass
+        
+        # Load button
+        btn_frame = ttk.Frame(entry_frame)
+        btn_frame.pack(side='right', padx=10)
+        
+        ttk.Button(btn_frame, text=self.lang.get('load'), 
+                   command=lambda: self._load_selected_palette(entry, dialog)).pack()
+    
+    def _load_selected_palette(self, entry, dialog):
+        """Load selected palette from metadata"""
+        try:
+            file_path = entry.get('path')
+            if file_path and os.path.exists(file_path):
+                self._load_palette_from_file(file_path)
+                dialog.destroy()
+            else:
+                messagebox.showerror(self.lang.get('error'), 
+                                    self.lang.get('msg_file_not_found'))
+                # Remove from metadata
+                self.file_handler.remove_palette_metadata(file_path)
+        except Exception as e:
+            messagebox.showerror(self.lang.get('error'), str(e))
+    
+    def _browse_other_palette(self, dialog):
+        """Browse for other palette file"""
+        filename = filedialog.askopenfilename(
+            title=self.lang.get('dialog_open_mps'),
+            filetypes=[(self.lang.get('my_palette_file'), '*.mps'), (self.lang.get('all_files'), '*.*')]
+        )
+        if filename:
+            try:
+                self._load_palette_from_file(filename)
+                dialog.destroy()
+            except Exception as e:
+                messagebox.showerror(self.lang.get('error'), str(e))
     
     def open_color_adjuster(self):
         """Open color adjustment dialog for selected palette."""
@@ -3510,6 +3714,7 @@ class PaletteApp(tk.Tk):
     def open_settings(self):
         """Open settings dialog."""
         dialog = tk.Toplevel(self)
+        set_window_icon(dialog)
         dialog.title(self.lang.get('dialog_settings'))
         dialog.geometry("500x600")
         dialog.resizable(False, False)
@@ -3689,6 +3894,7 @@ class PaletteApp(tk.Tk):
         
         # Create main dialog
         dialog = tk.Toplevel(self)
+        set_window_icon(dialog)
         dialog.title(self.lang.get('dialog_apply_palette'))
         dialog.geometry('600x500')
         dialog.transient(self)
@@ -3811,6 +4017,7 @@ class PaletteApp(tk.Tk):
                 
                 # Create window with exact recolored image size (no padding)
                 orig_window = tk.Toplevel(dialog)
+                set_window_icon(orig_window)
                 orig_window.title(self.lang.get('recolor_view_original'))
                 
                 img_width, img_height = recolored.size
@@ -3948,6 +4155,7 @@ class PaletteApp(tk.Tk):
             
             # Create dialog
             dialog = tk.Toplevel(self)
+            set_window_icon(dialog)
             dialog.title(self.lang.get('dialog_ai_settings'))
             dialog.geometry('500x420')
             dialog.transient(self)
@@ -4095,6 +4303,7 @@ class CustomHarmonyDialog:
         self.colors = []
 
         self.dialog = tk.Toplevel(parent)
+        set_window_icon(self.dialog)
         self.dialog.title(self.lang.get('dialog_custom_harmony'))
         self.dialog.geometry('1000x650')
         self.dialog.transient(parent)
@@ -4160,6 +4369,7 @@ class CustomHarmonyDialog:
         colors_btn_frame.pack(fill='x', pady=5)
         ttk.Button(colors_btn_frame, text=self.lang.get('add_hsv_color'), command=self.add_hsv_color).pack(side='left', padx=2)
         ttk.Button(colors_btn_frame, text=self.lang.get('add_fixed_color'), command=self.add_fixed_color).pack(side='left', padx=2)
+        ttk.Button(colors_btn_frame, text=self.lang.get('extract_from_image'), command=self.extract_from_image).pack(side='left', padx=2)
 
         self.btn_edit_color = ttk.Button(colors_btn_frame, text=self.lang.get('edit'), command=self.edit_color, state='disabled')
         self.btn_edit_color.pack(side='left', padx=2)
@@ -4235,6 +4445,77 @@ class CustomHarmonyDialog:
             self.colors.append({'type': 'fixed', 'color': color[1]})
             self.update_colors_display()
             self.update_preview()
+    
+    def extract_from_image(self):
+        """Extract colors from image and add as HSV functions relative to brightest color"""
+        try:
+            filename = filedialog.askopenfilename(
+                title=self.lang.get('select_image'),
+                filetypes=[
+                    (self.lang.get('image_files'), '*.png *.jpg *.jpeg *.bmp *.gif'),
+                    (self.lang.get('all_files'), '*.*')
+                ]
+            )
+            
+            if not filename:
+                return
+            
+            # Extract colors from image using existing function
+            num_colors = 5  # Extract 5 colors
+            extracted_colors = self.generator.extract_main_colors(filename, num_colors=num_colors)
+            
+            if not extracted_colors:
+                messagebox.showerror(self.lang.get('error'), self.lang.get('msg_extract_colors_failed'))
+                return
+            
+            # Convert RGB to HEX and calculate luminance for each color
+            color_data = []
+            for rgb in extracted_colors:
+                hex_color = self.generator.rgb_to_hex(rgb)
+                # Calculate luminance (perceived brightness)
+                luminance = 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]
+                color_data.append({'hex': hex_color, 'rgb': rgb, 'luminance': luminance})
+            
+            # Find color with highest luminance (brightest)
+            base_color_data = max(color_data, key=lambda x: x['luminance'])
+            base_rgb = base_color_data['rgb']
+            base_h, base_s, base_v = colorsys.rgb_to_hsv(base_rgb[0]/255, base_rgb[1]/255, base_rgb[2]/255)
+            
+            # Add all extracted colors as HSV offset functions
+            for data in color_data:
+                rgb = data['rgb']
+                h, s, v = colorsys.rgb_to_hsv(rgb[0]/255, rgb[1]/255, rgb[2]/255)
+                
+                # Calculate HSV offsets from base color
+                h_offset = (h - base_h) * 360  # Convert to degrees
+                # Handle hue wrap-around (shortest path)
+                if h_offset > 180:
+                    h_offset -= 360
+                elif h_offset < -180:
+                    h_offset += 360
+                
+                s_offset = (s - base_s) * 100  # Convert to percentage
+                v_offset = (v - base_v) * 100  # Convert to percentage
+                
+                # Add HSV color to list
+                color_entry = {
+                    'type': 'hsv',
+                    'h_offset': round(h_offset, 1),
+                    's_offset': round(s_offset, 1),
+                    'v_offset': round(v_offset, 1)
+                }
+                self.colors.append(color_entry)
+            
+            self.update_colors_display()
+            self.update_preview()
+            
+            messagebox.showinfo(
+                self.lang.get('done'),
+                self.lang.get('msg_colors_extracted').format(count=len(extracted_colors))
+            )
+            
+        except Exception as e:
+            messagebox.showerror(self.lang.get('error'), str(e))
 
     def edit_color(self):
         selection = self.colors_listbox.curselection()
@@ -4313,6 +4594,7 @@ class CustomHarmonyDialog:
     def _open_hsv_dialog(self, edit_index=None, existing_data=None):
         is_edit = edit_index is not None
         dlg = tk.Toplevel(self.dialog)
+        set_window_icon(dlg)
         dlg.title(self.lang.get('edit') if is_edit else self.lang.get('add_hsv_color'))
         dlg.geometry('500x400')
         dlg.transient(self.dialog)
@@ -4433,6 +4715,7 @@ class PresetPaletteBrowserDialog:
         self.color_search_filter = None
 
         self.dialog = tk.Toplevel(parent)
+        set_window_icon(self.dialog)
         self.dialog.title(self.lang.get('dialog_preset_palettes'))
         self.dialog.geometry('680x600')
         self.dialog.transient(parent)
@@ -4638,6 +4921,7 @@ class ColorAdjusterDialog:
         self.lang = lang_manager or getattr(parent, 'lang', None) or LanguageManager('en')
 
         self.dialog = tk.Toplevel(parent)
+        set_window_icon(self.dialog)
         self.dialog.title(self.lang.get('color_adjuster_title'))
         self.dialog.geometry("450x420")
         self.dialog.transient(parent)
@@ -4777,6 +5061,7 @@ class SingleColorAdjusterDialog:
         h, s, v = colorsys.rgb_to_hsv(r / 255.0, g / 255.0, b / 255.0)
 
         self.dialog = tk.Toplevel(parent)
+        set_window_icon(self.dialog)
         self.dialog.title(self.lang.get('hsv_dialog_title'))
         self.dialog.geometry("450x400")
         self.dialog.transient(parent)

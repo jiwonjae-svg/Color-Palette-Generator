@@ -7,6 +7,7 @@ import os
 import json
 import base64
 import logging
+import datetime
 from cryptography.fernet import Fernet
 
 EMBEDDED_KEY = b'VkZURWYzbUtiSFJ0Z2oyWHFwQjRwbjlSVldyakFrOWJPTUhjbGlDZmJZdz0='
@@ -200,3 +201,47 @@ class FileHandler:
             except Exception:
                 pass
             return default
+
+    def load_palette_metadata(self):
+        """Load palette metadata (list of saved palettes with paths and info)"""
+        return self.load_data_file('palette_metadata.dat', default=[])
+    
+    def save_palette_metadata(self, metadata):
+        """Save palette metadata"""
+        return self.save_data_file('palette_metadata.dat', metadata)
+    
+    def add_palette_metadata(self, name, colors, file_path):
+        """Add palette metadata entry"""
+        metadata = self.load_palette_metadata()
+        
+        # Remove existing entry with same path
+        metadata = [m for m in metadata if m.get('path') != file_path]
+        
+        # Add new entry
+        entry = {
+            'name': name,
+            'colors': colors,
+            'path': file_path,
+            'timestamp': datetime.datetime.now().isoformat()
+        }
+        metadata.insert(0, entry)
+        
+        # Limit to 100 entries
+        if len(metadata) > 100:
+            metadata = metadata[:100]
+        
+        return self.save_palette_metadata(metadata)
+    
+    def remove_palette_metadata(self, file_path):
+        """Remove palette metadata entry by file path"""
+        metadata = self.load_palette_metadata()
+        metadata = [m for m in metadata if m.get('path') != file_path]
+        return self.save_palette_metadata(metadata)
+    
+    def clean_palette_metadata(self):
+        """Remove metadata entries for non-existent files"""
+        metadata = self.load_palette_metadata()
+        cleaned = [m for m in metadata if os.path.exists(m.get('path', ''))]
+        if len(cleaned) != len(metadata):
+            self.save_palette_metadata(cleaned)
+        return cleaned
