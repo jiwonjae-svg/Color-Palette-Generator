@@ -11,7 +11,6 @@ A professional desktop application (Python + Tkinter) for generating, managing, 
 - Export palettes as PNG/TXT or share as .mps files
 - Optional AI palette generation via Google Gemini
 - Full Korean/English UI support (i18n)
-- Professional icon system across all windows
 
 ## ✨ Key Features
 
@@ -303,4 +302,5 @@ For bug reports, feature requests, or questions, please open an issue on GitHub.
 ---
 
 **Enjoy creating beautiful color palettes! 🎨**
+
 
