@@ -2,8 +2,6 @@
 
 A professional desktop application (Python + Tkinter) for generating, managing, and exporting color palettes with advanced features.
 
-![Application Icon](icon.ico)
-
 ## 🎨 Overview
 
 - Generate palettes from HEX colors, random colors, images, or screen-picked colors
@@ -305,3 +303,4 @@ For bug reports, feature requests, or questions, please open an issue on GitHub.
 ---
 
 **Enjoy creating beautiful color palettes! 🎨**
+
