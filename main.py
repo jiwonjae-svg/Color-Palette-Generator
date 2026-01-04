@@ -128,6 +128,9 @@ class PaletteApp(tk.Tk):
         self.setup_logging()
         self.log_action("Application started")
         
+        # Initialize preset palettes if not exists
+        self._init_preset_palettes_async()
+        
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         self.bind_shortcuts()
@@ -1635,12 +1638,21 @@ class PaletteApp(tk.Tk):
     
     def setup_logging(self):
         """Setup logging to file in Temp directory."""
-        temp_dir = os.path.join(os.path.dirname(__file__), 'temp')
+        # Use sys._MEIPASS for compiled executable, otherwise use __file__
+        import sys
+        if getattr(sys, 'frozen', False):
+            # Running as compiled executable
+            base_dir = os.path.dirname(sys.executable)
+        else:
+            # Running as script
+            base_dir = os.path.dirname(__file__)
+        
+        temp_dir = os.path.join(base_dir, 'temp')
         os.makedirs(temp_dir, exist_ok=True)
         log_file = os.path.join(temp_dir, 'app.log')
         
         # Clear existing handlers to avoid duplicates
-        logger = logging.getLogger(__name__)
+        logger = logging.getLogger()
         logger.handlers.clear()
         
         # Set logging level
@@ -1666,6 +1678,37 @@ class PaletteApp(tk.Tk):
         self.logger = logger
         self.logger.info("="*50)
         self.logger.info("Logging system initialized")
+    
+    def _init_preset_palettes_async(self):
+        """Initialize preset palettes in background if not exists"""
+        try:
+            # Check if preset palettes exist
+            preset_file = os.path.join('data', 'preset_palettes.dat')
+            if os.path.exists(preset_file):
+                return  # Already exists
+            
+            logging.info("Preset palettes not found. Generating in background...")
+            
+            # Start generation in background thread
+            import threading
+            
+            def generate_presets():
+                try:
+                    from preset_generator import PresetPaletteGenerator
+                    
+                    generator = PresetPaletteGenerator()
+                    palettes = generator.generate_all_palettes(count=1200)
+                    generator.save_palettes(self.file_handler, 'preset_palettes.dat')
+                    
+                    logging.info(f"Successfully generated {len(palettes)} preset palettes")
+                except Exception as e:
+                    logging.error(f"Failed to generate preset palettes: {e}")
+            
+            thread = threading.Thread(target=generate_presets, daemon=True)
+            thread.start()
+            
+        except Exception as e:
+            logging.error(f"Error initializing preset palettes: {e}")
     
     def log_action(self, action):
         """Log an action to the log file."""
@@ -2398,9 +2441,23 @@ class PaletteApp(tk.Tk):
         self.update_menu_states()
 
     def _select_saved_entry(self, idx):
+        # Store current scroll position
+        try:
+            scroll_pos = self.saved_canvas.yview()
+        except Exception:
+            scroll_pos = None
+        
         self._saved_selected = idx
         # do not clear main palette display; just re-render the saved list to show selection highlight
         self.render_saved_list()
+        
+        # Restore scroll position
+        if scroll_pos:
+            try:
+                self.saved_canvas.yview_moveto(scroll_pos[0])
+            except Exception:
+                pass
+        
         self.update_menu_states()
 
     def show_palette_context_menu(self, idx, event):
